@@ -1,0 +1,31 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: wagamama_db
+    environment:
+      POSTGRES_USER: wagamama
+      POSTGRES_PASSWORD: wagamama
+      POSTGRES_DB: wagamama_forecast
+    ports:
+      - "5432:5432"
+    volumes:
+      - wagamama_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagamama -d wagamama_forecast"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: wagamama_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  wagamama_db_data:
