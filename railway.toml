@@ -1,0 +1,31 @@
+# Railway deployment configuration
+# Deploy from GitHub: railway.app → New Project → Deploy from Repo
+
+[build]
+# Railway will use the Dockerfiles for each service
+
+[deploy]
+# Services are configured in the Railway dashboard:
+#
+# Service 1: "db"
+#   - Use the Railway PostgreSQL plugin (or TimescaleDB Docker image)
+#   - Set DATABASE_URL automatically
+#
+# Service 2: "api"
+#   - Dockerfile: Dockerfile.api
+#   - Environment variables:
+#     DATABASE_URL = ${{db.DATABASE_URL}}
+#     ENVIRONMENT = production
+#   - Port: 8000
+#
+# Service 3: "frontend"
+#   - Dockerfile: Dockerfile.frontend
+#   - Build args:
+#     NEXT_PUBLIC_API_URL = https://<api-service-name>.up.railway.app/api/v1
+#   - Port: 3000
+#
+# Quick setup:
+# 1. Add a PostgreSQL plugin (gives you DATABASE_URL)
+# 2. Add service from repo → root dir, Dockerfile.api
+# 3. Add service from repo → root dir, Dockerfile.frontend
+# 4. Wire the env vars as shown above

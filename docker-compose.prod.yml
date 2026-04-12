@@ -1,0 +1,48 @@
+# Full-stack production compose. Run with:
+#   docker compose -f docker-compose.prod.yml up --build
+# Then open http://localhost:3000
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: wagamama
+      POSTGRES_PASSWORD: wagamama
+      POSTGRES_DB: wagamama_forecast
+    ports:
+      - "5432:5432"
+    volumes:
+      - wagamama_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagamama -d wagamama_forecast"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql+psycopg://wagamama:wagamama@db:5432/wagamama_forecast
+      DATABASE_URL_SYNC: postgresql+psycopg://wagamama:wagamama@db:5432/wagamama_forecast
+      ENVIRONMENT: production
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  wagamama_db_data:
