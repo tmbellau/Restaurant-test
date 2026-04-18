@@ -106,8 +106,12 @@ def assemble_features(
     if available_weather_cols:
         df = _pit_merge_signal(df, weather_df, available_weather_cols)
 
-    # 3. PiT-merge holidays (daily granularity, forward-fill)
-    holiday_cols = ["is_bank_holiday", "is_school_holiday", "days_to_next_holiday", "days_from_last_holiday"]
+    # 3. PiT-merge holidays + cultural calendar (daily granularity, forward-fill)
+    holiday_cols = [
+        "is_bank_holiday", "is_school_holiday",
+        "days_to_next_holiday", "days_from_last_holiday",
+        "is_cultural_period", "days_to_next_cultural", "days_from_last_cultural",
+    ]
     available_hol_cols = [c for c in holiday_cols if c in holiday_df.columns]
     if available_hol_cols:
         df = _pit_merge_signal(df, holiday_df, available_hol_cols)
