@@ -64,15 +64,6 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
         live_source="Calendar rules, published annually",
         notes="Marathon, Carnival, Wimbledon Championships, Pride, NYE, etc.",
     ),
-    "premier_league": FeatureChannel(
-        name="premier_league",
-        status=ChannelStatus.ACTIVE,
-        historical_source=(
-            "football-data.org API free tier (all PL seasons from 2015)"
-        ),
-        live_source="Same API, fixtures published months ahead",
-        notes="All London PL clubs (Arsenal, Chelsea, Spurs, West Ham, etc.).",
-    ),
     "temporal": FeatureChannel(
         name="temporal",
         status=ChannelStatus.ACTIVE,
@@ -87,13 +78,22 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
         live_source="Derived from the ongoing GLA series",
         notes="Same-hour-last-week, rolling means from real demand history.",
     ),
-    # --- COLD channels: signals we cannot reliably collect either side ---
-    "concerts": FeatureChannel(
-        name="concerts",
+    # --- COLD channels: fail the (historical + live + comprehensive) test ---
+    "events": FeatureChannel(
+        name="events",
         status=ChannelStatus.COLD,
-        historical_source="Partial (scraping Wikipedia/setlist.fm)",
-        live_source="Ticketmaster has future events but partial coverage",
-        notes="Coverage gaps + hyperlocal impact = noise. Excluded.",
+        historical_source=(
+            "No single API covers all event types. "
+            "football-data.org (PL only), Ticketmaster (partial), "
+            "theatre/concerts/conferences/exhibitions all fragmented."
+        ),
+        live_source="Same fragmentation — no comprehensive live feed",
+        notes=(
+            "Cherry-picking one event type (e.g., Premier League) introduces "
+            "bias without capturing events that actually drive Soho footfall "
+            "(West End theatre matinees, conferences, concerts). Excluded "
+            "entirely until a comprehensive source is available."
+        ),
     ),
     "transport_disruptions": FeatureChannel(
         name="transport_disruptions",
@@ -107,7 +107,7 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
         status=ChannelStatus.COLD,
         historical_source="None — no simple free historical API",
         live_source="Twitter API available but complex + costly",
-        notes="Layer 4. Excluded.",
+        notes="Excluded. Could be added later as a plugin channel.",
     ),
 }
 

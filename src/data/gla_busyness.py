@@ -134,13 +134,15 @@ def load_gla_busyness(
 
     result = pd.DataFrame(
         {
-            "timestamp_utc": combined["timestamp_utc"].values,
-            "local_ts": combined["timestamp_local"].values,
+            "timestamp_utc": combined["timestamp_utc"].to_numpy(),
+            "local_ts": combined["timestamp_local"].to_numpy(),
             "restaurant_id": msoa_code,
             "cover_count": combined[count_col].astype(float).round().astype(int),
             "channel": "dine_in",
         }
     )
+    # Preserve tz-aware UTC dtype (merge_asof requires consistent dtypes)
+    result["timestamp_utc"] = pd.to_datetime(result["timestamp_utc"], utc=True)
 
     result = result.drop_duplicates(subset=["timestamp_utc"]).sort_values("timestamp_utc")
     result = result.reset_index(drop=True)

@@ -13,17 +13,16 @@ Data provenance (all REAL):
     Weather: Open-Meteo Archive for Soho (51.5131, -0.1318)
     Holidays: gov.uk bank-holidays.json + curated school calendar
     Cultural: Deterministic London events (Marathon, Wimbledon, Carnival, etc.)
-    Premier League: football-data.org API (all London clubs)
     Temporal: Inherent in timestamps (Fourier harmonics)
     Lags: Derived from the real GLA footfall series
 
-Excluded (cannot reliably collect both historical + live):
-    concerts, transport disruptions, social media
+Excluded (either no historical archive, or no comprehensive API):
+    events (theatre, concerts, conferences, sports — no single source),
+    transport disruptions, social media
 
 Usage:
     # 1. Download GLA CSV to data/gla_busyness/ (see module docstring)
-    # 2. Set FOOTBALL_DATA_API_KEY env var
-    # 3. Run:
+    # 2. Run:
     python -m src.data.build_training_set
 """
 
@@ -35,7 +34,6 @@ from pathlib import Path
 import pandas as pd
 import structlog
 
-from src.config import settings
 from src.data.feature_channels import get_active_channels, get_cold_channels
 from src.data.gla_busyness import (
     SOHO_LAT,
@@ -46,11 +44,6 @@ from src.data.gla_busyness import (
 )
 from src.data.historical_weather import fetch_weather
 from src.data.uk_cultural_calendar import build_uk_cultural_calendar
-from src.data.uk_events import (
-    build_pl_event_features,
-    fetch_pl_matches,
-    seasons_for_date_range,
-)
 from src.features.assembler import assemble_features
 from src.signals.holidays import HolidaySource
 
@@ -111,10 +104,7 @@ def build(
     # 6. Merge cultural into holidays (assembler treats them as one daily signal)
     holidays = _merge_cultural_into_holidays(holidays, cultural)
 
-    # 7. Premier League matches via football-data.org
-    pl_events = _fetch_pl_events(ts_min, ts_max, out_dir)
-
-    # 8. Assemble features
+    # 7. Assemble features (no event_df — events channel is cold)
     tz_map = {SOHO_MSOA_CODE: "Europe/London"}
     assembler_meta = meta[
         [
@@ -131,19 +121,19 @@ def build(
         covers_hourly=hourly,
         weather_df=weather,
         holiday_df=holidays,
-        event_df=pl_events,
+        event_df=pd.DataFrame(),
         transport_df=pd.DataFrame(),
         closures_df=pd.DataFrame(),
         restaurant_meta=assembler_meta,
         tz_map=tz_map,
     )
 
-    # 9. Save outputs
+    # 8. Save outputs
     hourly.to_parquet(out_dir / "hourly_footfall.parquet", index=False)
     meta.to_parquet(out_dir / "restaurant_meta.parquet", index=False)
     feature_df.to_parquet(out_dir / "training_features.parquet", index=False)
 
-    _log_provenance(hourly, weather, holidays, pl_events, feature_df)
+    _log_provenance(hourly, weather, holidays, feature_df)
 
     log.info(
         "training.build.done",
@@ -192,62 +182,33 @@ def _merge_cultural_into_holidays(
     return merged
 
 
-def _fetch_pl_events(
-    ts_min: pd.Timestamp, ts_max: pd.Timestamp, out_dir: Path
-) -> pd.DataFrame:
-    """Fetch Premier League matches and build proximity features."""
-    api_key = settings.football_data_api_key
-    if not api_key:
-        log.warning(
-            "training.pl.skip",
-            reason="no FOOTBALL_DATA_API_KEY",
-            hint="Register free at https://www.football-data.org/client/register",
-        )
-        return pd.DataFrame()
-
-    seasons = seasons_for_date_range(
-        ts_min.to_pydatetime(), ts_max.to_pydatetime()
-    )
-    try:
-        matches = fetch_pl_matches(
-            seasons=seasons,
-            api_key=api_key,
-            cache_path=out_dir / "pl_matches.parquet",
-        )
-    except Exception as e:
-        log.warning("training.pl.error", error=str(e))
-        return pd.DataFrame()
-
-    return build_pl_event_features(
-        match_data=matches,
-        restaurant_lat=SOHO_LAT,
-        restaurant_lng=SOHO_LNG,
-        restaurant_id=SOHO_MSOA_CODE,
-    )
-
-
 def _log_provenance(
     hourly: pd.DataFrame,
     weather: pd.DataFrame,
     holidays: pd.DataFrame,
-    events: pd.DataFrame,
     features: pd.DataFrame,
 ) -> None:
     """Document what's real in the training set."""
+    bh_count = (
+        int(holidays["is_bank_holiday"].sum())
+        if "is_bank_holiday" in holidays.columns
+        else 0
+    )
+    cultural_count = (
+        int(holidays["is_cultural_period"].sum())
+        if "is_cultural_period" in holidays.columns
+        else 0
+    )
     log.info(
         "training.provenance",
         location="Wagamama Soho (51.5131, -0.1318), MSOA E02000972",
         demand_target=f"REAL — GLA People Counts ({len(hourly)} hourly rows)",
         weather=f"REAL — Open-Meteo Archive ({len(weather)} hourly rows)",
-        holidays=f"REAL — gov.uk bank holidays ({int(holidays['is_bank_holiday'].sum()) if 'is_bank_holiday' in holidays.columns else 0} flagged days)",
-        cultural=f"REAL — deterministic ({int(holidays['is_cultural_period'].sum()) if 'is_cultural_period' in holidays.columns else 0} cultural days)",
-        pl_matches=(
-            f"REAL — {len(events)} match-days"
-            if not events.empty
-            else "NOT INCLUDED — missing FOOTBALL_DATA_API_KEY"
-        ),
+        holidays=f"REAL — gov.uk bank holidays ({bh_count} flagged days)",
+        cultural=f"REAL — deterministic ({cultural_count} cultural days)",
         temporal="REAL — Fourier harmonics from timestamps",
         lags="REAL — computed from real GLA footfall history",
+        events="EXCLUDED — no single API covers all event types comprehensively",
         n_training_rows=len(features),
         n_features=len(features.columns),
     )
