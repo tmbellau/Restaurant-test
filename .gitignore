@@ -28,6 +28,7 @@ mlartifacts/
 data/santander/
 data/training/
 data/models/
+data/holdout/
 .DS_Store
 *.swp
 node_modules/
