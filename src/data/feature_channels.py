@@ -32,18 +32,19 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
         name="demand_target",
         status=ChannelStatus.ACTIVE,
         historical_source=(
-            "HYBRID: TfL daily station entries/exits (TAPS data, 2019+) "
-            "× BestTime typical hourly pattern for Wagamama Soho "
-            "(Google Popular Times observations)"
+            "TfL Santander Cycles per-trip records (2015+), aggregated to "
+            "hourly trip counts at Soho-area docking stations "
+            "(Moor Street, Wardour Street, Broadwick Street, Golden Square, "
+            "nearby West End stations). https://cycling.data.tfl.gov.uk/"
         ),
         live_source=(
-            "TfL: updated daily. "
-            "BestTime: forecast + live endpoints (real-time)."
+            "Same source — TfL publishes new weekly CSVs continuously. "
+            "OGLv2 licence, no API key needed."
         ),
         notes=(
-            "Semi-synthetic at hourly level: TfL provides real daily volume "
-            "(captures weather/holiday effects), BestTime provides real "
-            "venue-specific hourly shape. When real POS arrives, swap in."
+            "Proxy for restaurant demand: cycling activity in Soho captures "
+            "the same weather/holiday/event sensitivities that drive walk-in "
+            "restaurant demand. When real Wagamama POS arrives, swap in."
         ),
     ),
     "weather": FeatureChannel(
