@@ -4,12 +4,7 @@ Every channel listed here must pass BOTH tests:
     1. Real historical bulk data available (for training)
     2. Live / future data available (for real-time prediction)
 
-A channel fails either test -> it's excluded from the model entirely.
-No pretending to learn from signals we can't actually feed at inference.
-
-For this London-only pipeline, every active channel has:
-    - Verified open-licence historical source
-    - Verified live API/feed for ongoing prediction
+A channel fails either test -> excluded entirely from the model.
 """
 
 from __future__ import annotations
@@ -33,15 +28,23 @@ class FeatureChannel:
 
 
 FEATURE_CHANNELS: dict[str, FeatureChannel] = {
-    "gla_footfall": FeatureChannel(
-        name="gla_footfall",
+    "demand_target": FeatureChannel(
+        name="demand_target",
         status=ChannelStatus.ACTIVE,
         historical_source=(
-            "GLA People Counts (O2 Motion) hourly by MSOA — "
-            "https://data.london.gov.uk/dataset/busyness-people-counts (OGL)"
+            "HYBRID: TfL daily station entries/exits (TAPS data, 2019+) "
+            "× BestTime typical hourly pattern for Wagamama Soho "
+            "(Google Popular Times observations)"
         ),
-        live_source="Same dataset, updated monthly by GLA",
-        notes="The TARGET signal. MSOA E02000972 = Fitzrovia West & Soho.",
+        live_source=(
+            "TfL: updated daily. "
+            "BestTime: forecast + live endpoints (real-time)."
+        ),
+        notes=(
+            "Semi-synthetic at hourly level: TfL provides real daily volume "
+            "(captures weather/holiday effects), BestTime provides real "
+            "venue-specific hourly shape. When real POS arrives, swap in."
+        ),
     ),
     "weather": FeatureChannel(
         name="weather",
@@ -62,7 +65,7 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
         status=ChannelStatus.ACTIVE,
         historical_source="Deterministic dates (London Marathon, Carnival, etc.)",
         live_source="Calendar rules, published annually",
-        notes="Marathon, Carnival, Wimbledon Championships, Pride, NYE, etc.",
+        notes="Marathon, Carnival, Wimbledon, Pride, Christmas markets, etc.",
     ),
     "temporal": FeatureChannel(
         name="temporal",
@@ -74,40 +77,34 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
     "lag_demand": FeatureChannel(
         name="lag_demand",
         status=ChannelStatus.ACTIVE,
-        historical_source="Derived from the GLA footfall target signal",
-        live_source="Derived from the ongoing GLA series",
-        notes="Same-hour-last-week, rolling means from real demand history.",
+        historical_source="Derived from the hybrid target signal",
+        live_source="Derived from ongoing target observations",
+        notes="Same-hour-last-week, rolling means.",
     ),
-    # --- COLD channels: fail the (historical + live + comprehensive) test ---
+    # --- COLD channels ---
     "events": FeatureChannel(
         name="events",
         status=ChannelStatus.COLD,
         historical_source=(
-            "No single API covers all event types. "
-            "football-data.org (PL only), Ticketmaster (partial), "
-            "theatre/concerts/conferences/exhibitions all fragmented."
+            "No single API covers all event types comprehensively. "
+            "Theatre, concerts, conferences, sports all fragmented."
         ),
-        live_source="Same fragmentation — no comprehensive live feed",
-        notes=(
-            "Cherry-picking one event type (e.g., Premier League) introduces "
-            "bias without capturing events that actually drive Soho footfall "
-            "(West End theatre matinees, conferences, concerts). Excluded "
-            "entirely until a comprehensive source is available."
-        ),
+        live_source="Same fragmentation",
+        notes="Excluded until a comprehensive source is available.",
     ),
     "transport_disruptions": FeatureChannel(
         name="transport_disruptions",
         status=ChannelStatus.COLD,
         historical_source="None — TfL publishes current status only",
         live_source="TfL Unified API (live only, no history)",
-        notes="No training data. Excluded until archive becomes available.",
+        notes="No training data. Excluded.",
     ),
     "social_media": FeatureChannel(
         name="social_media",
         status=ChannelStatus.COLD,
         historical_source="None — no simple free historical API",
         live_source="Twitter API available but complex + costly",
-        notes="Excluded. Could be added later as a plugin channel.",
+        notes="Excluded.",
     ),
 }
 
