@@ -63,10 +63,11 @@ class SalesRecord(Base):
 
     __tablename__ = "sales_records"
     __table_args__ = (
-        UniqueConstraint("transaction_id", "item_id", name="uq_sales_txn_item"),
+        UniqueConstraint("transaction_id", "item_id", "timestamp_utc", name="uq_sales_txn_item"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Note: composite PK (id, timestamp_utc) in migration for TimescaleDB hypertable
     restaurant_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("restaurants.id"), nullable=False, index=True
     )

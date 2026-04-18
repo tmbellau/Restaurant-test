@@ -46,7 +46,7 @@ def upgrade() -> None:
 
     op.create_table(
         "sales_records",
-        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, autoincrement=True, nullable=False),
         sa.Column(
             "restaurant_id", sa.String(64), sa.ForeignKey("restaurants.id"), nullable=False
         ),
@@ -66,7 +66,10 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.UniqueConstraint("transaction_id", "item_id", name="uq_sales_txn_item"),
+        sa.PrimaryKeyConstraint("id", "timestamp_utc"),
+        sa.UniqueConstraint(
+            "transaction_id", "item_id", "timestamp_utc", name="uq_sales_txn_item"
+        ),
     )
     op.create_index(
         "ix_sales_records_restaurant_ts",
@@ -76,7 +79,7 @@ def upgrade() -> None:
 
     op.create_table(
         "signal_features",
-        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, autoincrement=True, nullable=False),
         sa.Column(
             "restaurant_id", sa.String(64), sa.ForeignKey("restaurants.id"), nullable=False
         ),
@@ -89,6 +92,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
+        sa.PrimaryKeyConstraint("id", "timestamp_utc"),
         sa.UniqueConstraint(
             "restaurant_id", "timestamp_utc", "source", name="uq_signal_loc_ts_source"
         ),
