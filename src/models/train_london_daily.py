@@ -28,6 +28,17 @@ DEFAULT_MODEL_DIR = Path("data/models")
 EXCLUDE_COLS = {"cover_count", "date", "restaurant_id"}
 CATEGORICAL = ["city_tier", "footfall_zone_class", "country_code"]
 
+# Short-horizon lag features — exclude these to force the model to learn from
+# weather/calendar signals rather than just memorizing recent history. Makes
+# the model useful for 7+ day ahead forecasting (autoregressively stable).
+SHORT_HORIZON_LAGS = {
+    "covers_1d_lag",
+    "covers_7d_lag",
+    "covers_same_dow_last_week",
+    "covers_7d_mean",
+    "covers_7d_std",
+}
+
 DEFAULT_PARAMS = {
     "objective": "quantile",
     "alpha": 0.5,
@@ -43,8 +54,13 @@ DEFAULT_PARAMS = {
 }
 
 
-def prepare_xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, list[str]]:
-    feature_cols = [c for c in df.columns if c not in EXCLUDE_COLS]
+def prepare_xy(
+    df: pd.DataFrame, exclude_short_lags: bool = False
+) -> tuple[pd.DataFrame, pd.Series, list[str]]:
+    excluded = set(EXCLUDE_COLS)
+    if exclude_short_lags:
+        excluded |= SHORT_HORIZON_LAGS
+    feature_cols = [c for c in df.columns if c not in excluded]
     X = df[feature_cols].copy()
     y = df["cover_count"].copy()
 
@@ -73,6 +89,8 @@ def train(
     input_path: Path | None = None,
     model_dir: Path | None = None,
     coverage: float = 0.80,
+    exclude_short_lags: bool = False,
+    model_suffix: str = "",
 ) -> dict:
     input_path = input_path or DEFAULT_INPUT
     model_dir = model_dir or DEFAULT_MODEL_DIR
@@ -81,9 +99,14 @@ def train(
     df = pd.read_parquet(input_path)
     # Drop rows where essential lag features are NaN (first ~365 days)
     df = df.dropna(subset=["covers_7d_lag", "covers_7d_mean"]).reset_index(drop=True)
-    log.info("daily_train.loaded", rows=len(df), date_range=f"{df['date'].min().date()} to {df['date'].max().date()}")
+    log.info(
+        "daily_train.loaded",
+        rows=len(df),
+        date_range=f"{df['date'].min().date()} to {df['date'].max().date()}",
+        exclude_short_lags=exclude_short_lags,
+    )
 
-    X, y, cats = prepare_xy(df)
+    X, y, cats = prepare_xy(df, exclude_short_lags=exclude_short_lags)
     feature_cols = list(X.columns)
 
     # Walk-forward CV
@@ -123,10 +146,13 @@ def train(
         / max(np.sum(np.abs(y.loc[last_va].values)), 1e-8)
     )
 
-    # Save artefacts
-    with open(model_dir / "lgbm_daily.pkl", "wb") as fh:
+    # Save artefacts (optional suffix for A/B comparison)
+    model_path = model_dir / f"lgbm_daily{model_suffix}.pkl"
+    features_path = model_dir / f"daily_feature_names{model_suffix}.json"
+    metrics_path = model_dir / f"daily_training_metrics{model_suffix}.json"
+    with open(model_path, "wb") as fh:
         pickle.dump(model, fh)
-    (model_dir / "daily_feature_names.json").write_text(json.dumps(feature_cols, indent=2))
+    features_path.write_text(json.dumps(feature_cols, indent=2))
 
     metrics = {
         "cv_wape_mean": float(np.mean(cv_wapes)),
@@ -141,7 +167,7 @@ def train(
         "n_samples": len(df),
         "n_features": len(feature_cols),
     }
-    (model_dir / "daily_training_metrics.json").write_text(json.dumps(metrics, indent=2))
+    metrics_path.write_text(json.dumps(metrics, indent=2))
 
     log.info("daily_train.done", **{k: v for k, v in metrics.items() if not isinstance(v, list)})
 
@@ -159,8 +185,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, default=None)
     parser.add_argument("--model-dir", type=Path, default=None)
+    parser.add_argument(
+        "--exclude-short-lags", action="store_true",
+        help="Drop 1-day and 7-day lag features to force learning "
+             "from weather/calendar. Needed for multi-day-ahead forecasts."
+    )
+    parser.add_argument("--model-suffix", type=str, default="")
     args = parser.parse_args()
-    train(input_path=args.input, model_dir=args.model_dir)
+    train(
+        input_path=args.input,
+        model_dir=args.model_dir,
+        exclude_short_lags=args.exclude_short_lags,
+        model_suffix=args.model_suffix,
+    )
 
 
 if __name__ == "__main__":
