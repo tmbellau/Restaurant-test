@@ -38,6 +38,9 @@ data/models/*
 !data/models/lgbm_daily_q05.pkl
 !data/models/lgbm_daily_q50.pkl
 !data/models/lgbm_daily_q95.pkl
+!data/models/lgbm_daily_q05.txt
+!data/models/lgbm_daily_q50.txt
+!data/models/lgbm_daily_q95.txt
 !data/models/quantile_feature_names.json
 !data/models/quantile_metrics.json
 !data/models/daily_training_metrics.json

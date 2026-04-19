@@ -6,6 +6,7 @@ import json
 import pickle
 from pathlib import Path
 
+import lightgbm as lgb
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -17,10 +18,20 @@ st.set_page_config(page_title="How it works — Soho Cycles Forecast",
 
 @st.cache_resource(show_spinner=False)
 def load_median_model():
-    with open("data/models/lgbm_daily_q50.pkl", "rb") as fh:
+    """Prefer native Booster txt; fall back to sklearn pickle."""
+    txt_path = Path("data/models/lgbm_daily_q50.txt")
+    pkl_path = Path("data/models/lgbm_daily_q50.pkl")
+    if txt_path.exists():
+        booster = lgb.Booster(model_file=str(txt_path))
+        # Wrap importances into a uniform structure we can read
+        importances = booster.feature_importance(importance_type="split")
+        names_in_model = booster.feature_name()
+        return {"booster": booster, "importances": importances, "feature_names": names_in_model}
+    with open(pkl_path, "rb") as fh:
         model = pickle.load(fh)
-    features = json.loads(Path("data/models/quantile_feature_names.json").read_text())
-    return model, features
+    return {"booster": None, "importances": model.feature_importances_,
+            "feature_names": json.loads(Path("data/models/quantile_feature_names.json").read_text()),
+            "sklearn_model": model}
 
 
 @st.cache_data(show_spinner=False)
@@ -181,10 +192,10 @@ st.markdown(
     "a decision tree. Higher = more important."
 )
 
-model, features = load_median_model()
+model_info = load_median_model()
 imp = pd.DataFrame({
-    "feature": features,
-    "importance": model.feature_importances_,
+    "feature": model_info["feature_names"],
+    "importance": model_info["importances"],
 }).sort_values("importance", ascending=True).tail(20)
 
 fig = px.bar(

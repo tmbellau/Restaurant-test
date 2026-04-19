@@ -12,6 +12,7 @@ import pickle
 from datetime import date, timedelta
 from pathlib import Path
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -38,14 +39,21 @@ def load_daily() -> tuple[pd.DataFrame, dict, dict]:
 
 @st.cache_resource(show_spinner=False)
 def load_models() -> tuple[dict, list[str], float]:
+    """Load the three quantile models. Prefer native Booster txt format
+    (no sklearn dependency) and fall back to sklearn pickle."""
     model_dir = Path("data/models")
     features = json.loads((model_dir / "quantile_feature_names.json").read_text())
     metrics = json.loads((model_dir / "quantile_metrics.json").read_text())
     buffer = float(metrics.get("conformal_buffer", 0))
     models = {}
     for name, alpha in [("lower", 5), ("median", 50), ("upper", 95)]:
-        with open(model_dir / f"lgbm_daily_q{alpha:02d}.pkl", "rb") as fh:
-            models[name] = pickle.load(fh)
+        txt_path = model_dir / f"lgbm_daily_q{alpha:02d}.txt"
+        pkl_path = model_dir / f"lgbm_daily_q{alpha:02d}.pkl"
+        if txt_path.exists():
+            models[name] = lgb.Booster(model_file=str(txt_path))
+        else:
+            with open(pkl_path, "rb") as fh:
+                models[name] = pickle.load(fh)
     return models, features, buffer
 
 
@@ -95,7 +103,20 @@ def predict_one(models: dict, features: list[str], row: pd.Series, buffer: float
     for col in X.columns:
         if X[col].dtype == object and col not in CATEGORICAL:
             X[col] = pd.to_numeric(X[col], errors="coerce")
-    preds = {name: float(max(0, m.predict(X)[0])) for name, m in models.items()}
+    # Booster.predict returns array directly; sklearn wrapper's predict
+    # returns array too. Both return shape (n_samples,). Booster requires
+    # numeric input, not pandas categoricals.
+    preds = {}
+    for name, m in models.items():
+        if isinstance(m, lgb.Booster):
+            X_num = X.copy()
+            for c in CATEGORICAL:
+                if c in X_num.columns:
+                    # Map categorical to its integer code (Booster expects numeric)
+                    X_num[c] = X_num[c].cat.codes.astype(float) if hasattr(X_num[c], "cat") else 0
+            preds[name] = float(max(0, m.predict(X_num.values)[0]))
+        else:
+            preds[name] = float(max(0, m.predict(X)[0]))
     return {
         "lower": max(0, preds["lower"] - buffer),
         "predicted": preds["median"],
