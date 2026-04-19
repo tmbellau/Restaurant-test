@@ -290,76 +290,278 @@ if not df.empty:
         c2.metric("This week's MAE", f"{mae:.0f} trips/day")
         c3.metric("This week's WAPE", f"{wape:.1%}")
 
-    # ----- AI Explanation Button -----
-    st.markdown("#### Understand this forecast")
-    if st.button("🤖 Explain why the model predicted this", type="primary"):
-        api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+    # ==================================================================
+    # AI EXPLANATION — full-width, gradient-bordered, streaming
+    # ==================================================================
+    # CSS for the Apple-Intelligence-style panel
+    st.markdown(
+        """
+        <style>
+        .ai-panel {
+            position: relative;
+            padding: 28px 32px;
+            border-radius: 18px;
+            margin-top: 24px;
+            background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);
+            box-shadow:
+                0 1px 3px rgba(102, 126, 234, 0.06),
+                0 12px 40px -12px rgba(118, 75, 162, 0.12);
+        }
+        .ai-panel::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 18px;
+            padding: 2px;
+            background: linear-gradient(
+                135deg,
+                #667eea 0%,
+                #9f7aea 25%,
+                #ed64a6 50%,
+                #f56565 75%,
+                #ed8936 100%
+            );
+            -webkit-mask:
+                linear-gradient(#fff 0 0) content-box,
+                linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            pointer-events: none;
+            opacity: 0.85;
+        }
+        .ai-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            background: linear-gradient(90deg, #667eea, #9f7aea, #ed64a6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .ai-subtitle {
+            font-size: 0.9rem;
+            color: #6b7280;
+            margin-bottom: 18px;
+        }
+        .ai-content h3,
+        .ai-content h4 {
+            margin-top: 1.1em;
+            margin-bottom: 0.4em;
+            font-weight: 600;
+            color: #1a1a2e;
+        }
+        .ai-content ul {
+            margin-top: 0.3em;
+            padding-left: 1.3em;
+        }
+        .ai-content li {
+            margin-bottom: 0.4em;
+            line-height: 1.55;
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        .ai-loading {
+            background: linear-gradient(
+                90deg,
+                rgba(102, 126, 234, 0.08),
+                rgba(237, 100, 166, 0.15),
+                rgba(102, 126, 234, 0.08)
+            );
+            background-size: 200% 100%;
+            animation: shimmer 2.2s infinite linear;
+            height: 10px;
+            border-radius: 5px;
+            margin-top: 12px;
+        }
+        .stButton > button[kind="primary"] {
+            border-radius: 12px !important;
+            border: none !important;
+            background: linear-gradient(135deg, #667eea 0%, #9f7aea 50%, #ed64a6 100%) !important;
+            color: white !important;
+            font-weight: 600 !important;
+            padding: 10px 22px !important;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25) !important;
+            transition: all 0.2s ease !important;
+        }
+        .stButton > button[kind="primary"]:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(102, 126, 234, 0.35) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("")  # spacer
+    explain_clicked = st.button(
+        "✨ Explain this forecast",
+        type="primary",
+        help="Uses Claude to generate a plain-English breakdown of what drove the model's predictions this week.",
+    )
+
+    if explain_clicked:
+        api_key = ""
+        if hasattr(st, "secrets"):
+            try:
+                api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            except Exception:
+                api_key = ""
         if not api_key:
             api_key = st.session_state.get("_anthropic_key", "")
+
         if not api_key:
-            st.warning("No API key found. Add ANTHROPIC_API_KEY to Streamlit secrets or enter below.")
-            api_key = st.text_input("Anthropic API key", type="password", key="_key_input")
-            if api_key:
-                st.session_state["_anthropic_key"] = api_key
+            with st.expander("🔑 Enter Anthropic API key (not stored)"):
+                k = st.text_input("API key", type="password", key="_key_input")
+                if k:
+                    st.session_state["_anthropic_key"] = k
+                    api_key = k
 
         if api_key:
             import anthropic
 
-            # Build context for Claude
+            # Build rich context for the model
             week_data = []
             for _, r in df.iterrows():
-                day_info = {
+                day = {
                     "date": r["target"].strftime("%A %Y-%m-%d"),
                     "horizon_days_ahead": int(r["horizon"]),
                     "predicted_trips": round(float(r["predicted"])),
-                    "lower_80pct": round(float(r["lower"])),
-                    "upper_80pct": round(float(r["upper"])),
-                    "actual_trips": round(float(r["actual"])) if pd.notna(r["actual"]) else "unknown",
+                    "interval_lower_80pct": round(float(r["lower"])),
+                    "interval_upper_80pct": round(float(r["upper"])),
+                    "actual_trips": round(float(r["actual"])) if pd.notna(r["actual"]) else None,
                     "temperature_c": round(float(r["temp_mean_c"]), 1) if pd.notna(r["temp_mean_c"]) else None,
                     "rainfall_mm": round(float(r["precipitation_total_mm"]), 1) if pd.notna(r["precipitation_total_mm"]) else None,
                     "bank_holiday": bool(r["is_bank_holiday"]),
-                    "tube_strike": bool(r["is_tube_strike"]),
+                    "tube_strike_flagged": bool(r["is_tube_strike"]),
                 }
-                week_data.append(day_info)
+                if day["actual_trips"] is not None:
+                    err = day["predicted_trips"] - day["actual_trips"]
+                    day["error_trips"] = err
+                    day["error_pct"] = round(err / max(day["actual_trips"], 1) * 100, 1)
+                    day["inside_interval"] = (
+                        day["actual_trips"] >= day["interval_lower_80pct"]
+                        and day["actual_trips"] <= day["interval_upper_80pct"]
+                    )
+                week_data.append(day)
 
             origin_actual = actuals.get(origin, 0)
-            prompt = f"""You are analysing predictions from a cycling demand forecasting model.
-The model predicts daily Santander Cycles trip counts at Soho docking stations in London.
 
-The forecast origin is {origin.strftime('%A %Y-%m-%d')} with {origin_actual:.0f} actual trips that day.
+            prompt = f"""You are explaining a demand forecasting model's reasoning for one week of predictions.
 
-Here are the predictions for the next {len(week_data)} days:
+## Model context
 
+Target: daily Santander Cycles trips at Soho, London docking stations.
+Training: 2017-2024 (excluding COVID 2020-2021) on 2,264 daily observations.
+Architecture: three LightGBM quantile models (5th/50th/95th percentile) plus a per-horizon conformal buffer.
+
+Top input features (by importance): temperature change day-over-day, wind speed, minimum temperature,
+temperature anomaly vs 30-day average, 28-day rolling demand mean, holiday proximity, precipitation,
+day-of-year seasonality, 1/7/14/28/365-day lags, daylight hours.
+
+## What the model CANNOT see
+
+- Live tube disruptions beyond the hand-curated strike list (many real-world disruptions aren't flagged)
+- Real-time TfL bike availability / pricing / promotions
+- Santander fleet expansion (new e-bikes, docking station additions)
+- Hyperlocal events (individual shows, protests, filming closures)
+- Weather extremes very poorly represented in training (single hottest day, deep freezes)
+- Social effects (TikTok trends, viral events)
+- Covid recovery effects (2020-2021 were excluded so model thinks 2022+ is "normal")
+
+## Forecast origin
+
+{origin.strftime('%A %Y-%m-%d')} — {origin_actual:.0f} actual trips.
+
+## Week being explained
+
+```json
 {json.dumps(week_data, indent=2)}
+```
 
-The model uses these key inputs: weather (temperature, rain, wind), UK bank holidays,
-school holidays, London cultural events, daylight hours, tube strike flags, and
-historical demand lags (1d, 7d, 14d, 28d, 365d rolling averages).
+## Your task
 
-The top features by importance are: temperature change (day-over-day), wind speed,
-minimum temperature, temperature anomaly vs 30-day average, 28-day rolling mean,
-holiday proximity, and precipitation.
+Produce a CONCISE, BULLET-POINT explanation using exactly these four markdown sections:
 
-Write a clear 3-4 paragraph explanation for a non-technical reader covering:
-1. What the model predicted and how it compares to what actually happened
-2. What likely drove the prediction levels (which inputs mattered most this week)
-3. Where it got things right and where it missed, with specific reasons
-4. Any notable patterns (weekend dips, weather effects, holiday effects)
+### 🎯 What drove the prediction
 
-Be specific about the numbers. Use plain language. Don't hedge excessively."""
+- 3-4 bullets naming the specific features the model leaned on hardest THIS week and why.
+- Be specific: "Temperature of 18°C was +3°C above the 30-day average, pushing predictions up by ~X trips."
+- Don't describe what the predictions were — explain what features caused them.
 
-            with st.spinner("Generating explanation..."):
-                try:
-                    client = anthropic.Anthropic(api_key=api_key)
-                    response = client.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=800,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    explanation = response.content[0].text
-                    st.markdown(explanation)
-                except Exception as e:
-                    st.error(f"API error: {e}")
+### 📊 Per-day reasoning
+
+- One bullet per day. Name the most likely top-1 or top-2 drivers for each day's prediction level.
+- Use the day-of-week, weather, and flags. Be direct.
+
+### ⚠️ Where the model likely missed (and why)
+
+- Bullets for any days where actual was outside the interval or far from the prediction.
+- Suggest plausible real-world reasons the model couldn't anticipate — NOT generic "the model was uncertain."
+- Consider: local events not in the calendar, weather forecast inaccuracy, live tube issues, fleet changes, random noise.
+- If all days were fine, briefly say so and name one or two risk factors that could have made the week worse.
+
+### 🕳 Blindspots to know about
+
+- 3-4 bullets on factors the model couldn't see that would have mattered for this specific week.
+- Be concrete: "No way to capture the Notting Hill street festival on Sunday" beats generic blindspot lists.
+
+## Rules
+
+- Bullet points only, no paragraphs.
+- Each bullet: one sentence, two max.
+- Use specific numbers from the data wherever possible.
+- Don't hedge with "might", "could", "possibly" unnecessarily — be direct.
+- Don't re-describe what happened (the user sees the chart). Explain the reasoning.
+"""
+
+            panel_placeholder = st.empty()
+            panel_placeholder.markdown(
+                '<div class="ai-panel">'
+                '<div class="ai-header">✨ Model reasoning</div>'
+                '<div class="ai-subtitle">Generating explanation based on this week\'s inputs and outputs…</div>'
+                '<div class="ai-loading"></div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+            try:
+                import markdown as md_lib
+                client = anthropic.Anthropic(api_key=api_key)
+                week_label = df["target"].min().strftime("%a %b %d %Y")
+                with client.messages.stream(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1200,
+                    messages=[{"role": "user", "content": prompt}],
+                ) as stream:
+                    buf = []
+                    for text in stream.text_stream:
+                        buf.append(text)
+                        # Convert streamed markdown -> HTML so headings/bullets render inside the panel
+                        rendered = md_lib.markdown(
+                            "".join(buf),
+                            extensions=["fenced_code", "nl2br", "sane_lists"],
+                        )
+                        panel_placeholder.markdown(
+                            f'<div class="ai-panel">'
+                            f'<div class="ai-header">✨ Model reasoning</div>'
+                            f'<div class="ai-subtitle">Forecast for the week starting {week_label}</div>'
+                            f'<div class="ai-content">{rendered}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+            except Exception as e:
+                panel_placeholder.markdown(
+                    f'<div class="ai-panel">'
+                    f'<div class="ai-header">✨ Model reasoning</div>'
+                    f'<div class="ai-content">⚠️ API error: {e}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
 st.divider()
 
