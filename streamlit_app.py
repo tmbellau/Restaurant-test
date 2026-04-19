@@ -168,6 +168,20 @@ c3.metric("Training data", "6 years (2017-2024)",
 c4.metric("Holdout (unseen)", "All of 2025",
           help="Every metric on this page comes from 2025 data the model never saw during training.")
 
+# Executive summary — computed from the data
+_within_20 = (h1["pct_error"].abs() <= 20).mean() * 100
+_within_10 = (h1["pct_error"].abs() <= 10).mean() * 100
+st.markdown(
+    f"<div style='padding: 14px 18px; margin-top: 10px; border-radius: 12px; "
+    f"background: linear-gradient(135deg, rgba(102,126,234,0.06), rgba(237,100,166,0.04)); "
+    f"border-left: 3px solid #9f7aea; font-size: 0.95rem;'>"
+    f"<strong>In short:</strong> the model predicts <strong>{_within_10:.0f}%</strong> of 2025 days "
+    f"within ±10% of the actual and <strong>{_within_20:.0f}%</strong> within ±20%. "
+    f"Strongest May-Oct (WAPE 6-10%), hardest Jan-Feb (14-21%) where low volume amplifies % error."
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
 st.divider()
 
 
@@ -668,215 +682,223 @@ st.divider()
 
 
 # ==========================================================================
-# SECTION 3 — Full-year performance
 # ==========================================================================
-st.header("How it did across 2025")
-st.markdown(
-    "Every day in 2025 was forecast 7 times (1 to 7 days ahead) and compared "
-    "to the actual — 2,548 forecasts in total. Here's the full picture."
-)
+# Tabs: Performance | Under the hood | What's missing
+# ==========================================================================
+tab_perf, tab_under, tab_missing = st.tabs([
+    "📈 Performance",
+    "🧠 Under the hood",
+    "🔍 What's missing",
+])
 
-c1, c2 = st.columns(2)
+with tab_perf:
+    st.header("How it did across 2025")
+    st.markdown(
+        "Every day in 2025 was forecast 7 times (1 to 7 days ahead) and compared "
+        "to the actual — 2,548 forecasts in total. Here's the full picture."
+    )
 
-# Left: WAPE by horizon
-h_stats = eval_ok.groupby("horizon").agg(
-    coverage=("in_interval", "mean"),
-    wape=("abs_err", lambda x: x.sum() / eval_ok.loc[x.index, "actual"].abs().sum()),
-    mae=("abs_err", "mean"),
-).reset_index()
+    c1, c2 = st.columns(2)
 
-with c1:
+    # Left: WAPE by horizon
+    h_stats = eval_ok.groupby("horizon").agg(
+        coverage=("in_interval", "mean"),
+        wape=("abs_err", lambda x: x.sum() / eval_ok.loc[x.index, "actual"].abs().sum()),
+        mae=("abs_err", "mean"),
+    ).reset_index()
+
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=h_stats["horizon"].astype(str) + "d ahead",
+            y=(h_stats["wape"] * 100).round(2),
+            marker_color="#1f77b4",
+            text=(h_stats["wape"] * 100).round(1).astype(str) + "%",
+            textposition="outside",
+        ))
+        fig.update_layout(
+            title="Accuracy by forecast horizon",
+            yaxis_title="WAPE (%)", xaxis_title=None,
+            height=320, showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
+        )
+        fig.update_yaxes(range=[0, max(h_stats["wape"] * 100) * 1.25])
+        st.plotly_chart(fig, width="stretch")
+        st.caption("WAPE (lower = better) grows gently with horizon, from ~12% at 1 day to ~13% at 7 days.")
+
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=h_stats["horizon"].astype(str) + "d ahead",
+            y=(h_stats["coverage"] * 100).round(1),
+            marker_color=["#2ca02c" if c >= 0.77 else "#ff7f0e" for c in h_stats["coverage"]],
+            text=(h_stats["coverage"] * 100).round(0).astype(int).astype(str) + "%",
+            textposition="outside",
+        ))
+        fig.add_hline(y=80, line_dash="dash", line_color="#555",
+                      annotation_text="80% target", annotation_position="top right")
+        fig.update_layout(
+            title="Prediction interval coverage",
+            yaxis_title="Coverage (%)", xaxis_title=None,
+            height=320, showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
+        )
+        fig.update_yaxes(range=[0, 100])
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Actuals fall inside the interval ~80% of the time at every horizon — by design (conformal calibration).")
+
+    # Monthly WAPE breakdown
+    st.markdown("##### Accuracy month by month (1-day-ahead)")
+    monthly = h1.copy()
+    monthly["month"] = monthly["target"].dt.month
+    monthly["month_name"] = monthly["target"].dt.month_name().str[:3]
+    m_stats = monthly.groupby(["month", "month_name"]).agg(
+        wape=("abs_err", lambda x: x.sum() / monthly.loc[x.index, "actual"].abs().sum()),
+    ).reset_index().sort_values("month")
+
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=h_stats["horizon"].astype(str) + "d ahead",
-        y=(h_stats["wape"] * 100).round(2),
-        marker_color="#1f77b4",
-        text=(h_stats["wape"] * 100).round(1).astype(str) + "%",
+        x=m_stats["month_name"],
+        y=(m_stats["wape"] * 100).round(1),
+        marker_color=[
+            "#d62728" if w > 0.20 else "#ff7f0e" if w > 0.14 else "#2ca02c"
+            for w in m_stats["wape"]
+        ],
+        text=(m_stats["wape"] * 100).round(1).astype(str) + "%",
         textposition="outside",
     ))
     fig.update_layout(
-        title="Accuracy by forecast horizon",
+        height=260, showlegend=False, margin=dict(l=0, r=0, t=10, b=0),
         yaxis_title="WAPE (%)", xaxis_title=None,
-        height=320, showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
     )
-    fig.update_yaxes(range=[0, max(h_stats["wape"] * 100) * 1.25])
+    fig.update_yaxes(range=[0, max(m_stats["wape"] * 100) * 1.3])
     st.plotly_chart(fig, width="stretch")
-    st.caption("WAPE (lower = better) grows gently with horizon, from ~12% at 1 day to ~13% at 7 days.")
+    st.markdown(
+        """
+    **Why is winter (especially January) less accurate?**
 
-with c2:
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=h_stats["horizon"].astype(str) + "d ahead",
-        y=(h_stats["coverage"] * 100).round(1),
-        marker_color=["#2ca02c" if c >= 0.77 else "#ff7f0e" for c in h_stats["coverage"]],
-        text=(h_stats["coverage"] * 100).round(0).astype(int).astype(str) + "%",
-        textposition="outside",
-    ))
-    fig.add_hline(y=80, line_dash="dash", line_color="#555",
-                  annotation_text="80% target", annotation_position="top right")
-    fig.update_layout(
-        title="Prediction interval coverage",
-        yaxis_title="Coverage (%)", xaxis_title=None,
-        height=320, showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
-    )
-    fig.update_yaxes(range=[0, 100])
-    st.plotly_chart(fig, width="stretch")
-    st.caption("Actuals fall inside the interval ~80% of the time at every horizon — by design (conformal calibration).")
+    Mostly one reason: **lower volume amplifies percentage error.** January averages ~680 trips/day
+    vs ~1,800 in June. The model's **absolute** error is actually similar across months (~150-200
+    trips MAE), but dividing that by 680 in January gives ~21% WAPE while dividing by 1,800 in
+    June gives ~8%. It's a percentage-arithmetic artefact, not a meaningful quality difference.
+    The model is about as good in absolute terms year-round; it just looks worse in ratio terms
+    when the baseline is low.
 
-# Monthly WAPE breakdown
-st.markdown("##### Accuracy month by month (1-day-ahead)")
-monthly = h1.copy()
-monthly["month"] = monthly["target"].dt.month
-monthly["month_name"] = monthly["target"].dt.month_name().str[:3]
-m_stats = monthly.groupby(["month", "month_name"]).agg(
-    wape=("abs_err", lambda x: x.sum() / monthly.loc[x.index, "actual"].abs().sum()),
-).reset_index().sort_values("month")
-
-fig = go.Figure()
-fig.add_trace(go.Bar(
-    x=m_stats["month_name"],
-    y=(m_stats["wape"] * 100).round(1),
-    marker_color=[
-        "#d62728" if w > 0.20 else "#ff7f0e" if w > 0.14 else "#2ca02c"
-        for w in m_stats["wape"]
-    ],
-    text=(m_stats["wape"] * 100).round(1).astype(str) + "%",
-    textposition="outside",
-))
-fig.update_layout(
-    height=260, showlegend=False, margin=dict(l=0, r=0, t=10, b=0),
-    yaxis_title="WAPE (%)", xaxis_title=None,
-)
-fig.update_yaxes(range=[0, max(m_stats["wape"] * 100) * 1.3])
-st.plotly_chart(fig, width="stretch")
-st.markdown(
+    All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
+    on **1-day-ahead** predictions only (the most accurate horizon).
     """
-**Why is winter (especially January) less accurate?**
-
-Mostly one reason: **lower volume amplifies percentage error.** January averages ~680 trips/day
-vs ~1,800 in June. The model's **absolute** error is actually similar across months (~150-200
-trips MAE), but dividing that by 680 in January gives ~21% WAPE while dividing by 1,800 in
-June gives ~8%. It's a percentage-arithmetic artefact, not a meaningful quality difference.
-The model is about as good in absolute terms year-round; it just looks worse in ratio terms
-when the baseline is low.
-
-All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
-on **1-day-ahead** predictions only (the most accurate horizon).
-"""
-)
-
-st.divider()
-
-
-# ==========================================================================
-# SECTION 4 — What goes into the model
-# ==========================================================================
-st.header("What goes into the model")
-st.markdown(
-    "49 features per day, grouped into five themes. All free, all automatically collected, "
-    "no manual inputs."
-)
-
-col_feats, col_imp = st.columns([2, 3])
-
-with col_feats:
-    st.markdown("##### Input features")
-    groups = {
-        "🌦 **Weather** (15)": "Temperature (mean / min / max / anomaly), rainfall total, "
-                                "wind speed, weather code, rain streak (consecutive wet days), "
-                                "temperature shock (day-over-day swing), severe weather flag.",
-        "📅 **Calendar** (17)": "Day of week, month, week, day of year (with cyclical encodings), "
-                                 "bank holidays + days-to/from, England school holidays, "
-                                 "cultural events (Marathon, Pride, Carnival, Wimbledon, NYE), "
-                                 "known tube-strike days + days-since.",
-        "☀️ **Daylight** (3)": "Sunrise hour, sunset hour, daylight hours — astronomically "
-                                "calculated from the date. Deterministic, never wrong.",
-        "🔁 **Demand history** (9)": "Cover count 1 / 7 / 14 / 28 / 365 days ago, rolling 7d and "
-                                      "28d means, rolling 7d volatility. Horizon-aware: stale at "
-                                      "longer horizons.",
-        "📊 **Horizon** (1)": "How far ahead we're forecasting (1 to 7 days). The model learns "
-                               "that stale lag features come with wider uncertainty.",
-    }
-    for title, desc in groups.items():
-        st.markdown(f"{title}")
-        st.caption(desc)
-
-with col_imp:
-    st.markdown("##### What the model actually uses most")
-    _, _, _, metrics = load_models()
-    booster = lgb.Booster(model_file="data/models/lgbm_horizon_q50.txt")
-    imp_df = pd.DataFrame({
-        "feature": booster.feature_name(),
-        "importance": booster.feature_importance(importance_type="split"),
-    }).sort_values("importance", ascending=True).tail(15)
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        y=imp_df["feature"], x=imp_df["importance"],
-        orientation="h",
-        marker_color="#1f77b4",
-    ))
-    fig.update_layout(
-        height=500, showlegend=False,
-        margin=dict(l=0, r=0, t=10, b=0),
-        xaxis_title="Relative importance (tree splits)", yaxis_title=None,
-    )
-    st.plotly_chart(fig, width="stretch")
-    st.caption(
-        "Weather features (wind, temperature, temperature change) dominate — which is right: "
-        "cycling demand really does depend on the weather. Holiday distance and day-of-year seasonality "
-        "also carry weight. Lag features anchor the model in recent context."
     )
 
-st.divider()
+    st.divider()
 
 
-# ==========================================================================
-# SECTION 5 — How it works
-# ==========================================================================
-st.header("How it works")
-st.markdown(
+    # ==========================================================================
+
+with tab_under:
+    st.header("What goes into the model")
+    st.markdown(
+        "49 features per day, grouped into five themes. All free, all automatically collected, "
+        "no manual inputs."
+    )
+
+    col_feats, col_imp = st.columns([2, 3])
+
+    with col_feats:
+        st.markdown("##### Input features")
+        groups = {
+            "🌦 **Weather** (15)": "Temperature (mean / min / max / anomaly), rainfall total, "
+                                    "wind speed, weather code, rain streak (consecutive wet days), "
+                                    "temperature shock (day-over-day swing), severe weather flag.",
+            "📅 **Calendar** (17)": "Day of week, month, week, day of year (with cyclical encodings), "
+                                     "bank holidays + days-to/from, England school holidays, "
+                                     "cultural events (Marathon, Pride, Carnival, Wimbledon, NYE), "
+                                     "known tube-strike days + days-since.",
+            "☀️ **Daylight** (3)": "Sunrise hour, sunset hour, daylight hours — astronomically "
+                                    "calculated from the date. Deterministic, never wrong.",
+            "🔁 **Demand history** (9)": "Cover count 1 / 7 / 14 / 28 / 365 days ago, rolling 7d and "
+                                          "28d means, rolling 7d volatility. Horizon-aware: stale at "
+                                          "longer horizons.",
+            "📊 **Horizon** (1)": "How far ahead we're forecasting (1 to 7 days). The model learns "
+                                   "that stale lag features come with wider uncertainty.",
+        }
+        for title, desc in groups.items():
+            st.markdown(f"{title}")
+            st.caption(desc)
+
+    with col_imp:
+        st.markdown("##### What the model actually uses most")
+        _, _, _, metrics = load_models()
+        booster = lgb.Booster(model_file="data/models/lgbm_horizon_q50.txt")
+        imp_df = pd.DataFrame({
+            "feature": booster.feature_name(),
+            "importance": booster.feature_importance(importance_type="split"),
+        }).sort_values("importance", ascending=True).tail(15)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=imp_df["feature"], x=imp_df["importance"],
+            orientation="h",
+            marker_color="#1f77b4",
+        ))
+        fig.update_layout(
+            height=500, showlegend=False,
+            margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="Relative importance (tree splits)", yaxis_title=None,
+        )
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Weather features (wind, temperature, temperature change) dominate — which is right: "
+            "cycling demand really does depend on the weather. Holiday distance and day-of-year seasonality "
+            "also carry weight. Lag features anchor the model in recent context."
+        )
+
+    st.divider()
+
+
+    # ==========================================================================
+
+    st.header("How it works")
+    st.markdown(
+        """
+    **The target.** Daily count of Santander Cycles trips at Soho-area docking stations
+    (Moor Street, Wardour Street, Broadwick Street, Golden Square and nearby West End stations).
+    Data from TfL's public open-data bucket, 4.25 million trips since 2017.
+
+    **The model.** Three LightGBM gradient-boosted trees predicting the 5th, 50th, and 95th
+    percentile of demand given the 49 input features. Each is an ensemble of ~500 trees;
+    training minimises pinball loss (asymmetric, targets the specified percentile).
+
+    **The prediction intervals.** The raw quantile predictions are widened by a conformal
+    calibration buffer — we look at how often the raw [5th, 95th] interval contains actual
+    values on held-out data and add exactly the amount needed to achieve 80% empirical
+    coverage on 2025. No hand-tuned multiplier; the buffer comes directly from observed
+    residuals.
     """
-**The target.** Daily count of Santander Cycles trips at Soho-area docking stations
-(Moor Street, Wardour Street, Broadwick Street, Golden Square and nearby West End stations).
-Data from TfL's public open-data bucket, 4.25 million trips since 2017.
+    )
 
-**The model.** Three LightGBM gradient-boosted trees predicting the 5th, 50th, and 95th
-percentile of demand given the 49 input features. Each is an ensemble of ~500 trees;
-training minimises pinball loss (asymmetric, targets the specified percentile).
-
-**The prediction intervals.** The raw quantile predictions are widened by a conformal
-calibration buffer — we look at how often the raw [5th, 95th] interval contains actual
-values on held-out data and add exactly the amount needed to achieve 80% empirical
-coverage on 2025. No hand-tuned multiplier; the buffer comes directly from observed
-residuals.
-"""
-)
-
-st.divider()
+    st.divider()
 
 
-# ==========================================================================
-# SECTION 6 — Limitations
-# ==========================================================================
-st.header("What's missing from the model")
-st.markdown(
-    "These are inputs that would improve accuracy but aren't included — "
-    "either because no free historical data exists, or it would require "
-    "ongoing manual curation."
-)
-st.markdown(
+    # ==========================================================================
+
+with tab_missing:
+    st.header("What's missing from the model")
+    st.markdown(
+        "These are inputs that would improve accuracy but aren't included — "
+        "either because no free historical data exists, or it would require "
+        "ongoing manual curation."
+    )
+    st.markdown(
+        """
+    | Missing input | Why it matters | Why it's not included |
+    |---|---|---|
+    | **Live TfL disruption feed** | Tube disruptions push people to bikes (or deter travel entirely). The September 2025 week-long RMT strike caused a 2× surge we missed. | No free historical archive of unplanned disruptions. Our static strike list captures major actions only. |
+    | **Hyperlocal events** | Film premieres, Chinese New Year, protest marches, fashion week pop-ups all affect Soho foot traffic. | No structured historical event data for this level of granularity. Would require ongoing manual curation or an events API. |
+    | **Santander fleet size / pricing** | TfL's e-bike fleet grew significantly between 2024-2025, causing a structural demand uplift the model didn't anticipate. | TfL announces changes in press releases but doesn't publish a machine-readable time series of fleet size or pricing by date — so we can't use it as a training feature. |
+    | **Real-time weather forecast** | The demo uses actual historical weather (perfect hindsight). In production, multi-day weather forecasts degrade past day 3-4 — the model would inherit that forecast error. | The API exists (Open-Meteo Forecast) and a client is built (`src/data/weather_forecast.py`), but the demo evaluates on 2025 using archive weather for a fair like-for-like comparison with training. |
+    | **Social / viral events** | A TikTok trend or cycling campaign could temporarily spike demand. | No structured data source exists. |
+    | **Competitor transport changes** | Lime / Uber bike availability, e-scooter regulation changes affect Santander usage. | No historical archive. |
     """
-| Missing input | Why it matters | Why it's not included |
-|---|---|---|
-| **Live TfL disruption feed** | Tube disruptions push people to bikes (or deter travel entirely). The September 2025 week-long RMT strike caused a 2× surge we missed. | No free historical archive of unplanned disruptions. Our static strike list captures major actions only. |
-| **Hyperlocal events** | Film premieres, Chinese New Year, protest marches, fashion week pop-ups all affect Soho foot traffic. | No structured historical event data for this level of granularity. Would require ongoing manual curation or an events API. |
-| **Santander fleet size / pricing** | TfL's e-bike fleet grew significantly between 2024-2025, causing a structural demand uplift the model didn't anticipate. | TfL announces changes in press releases but doesn't publish a machine-readable time series of fleet size or pricing by date — so we can't use it as a training feature. |
-| **Real-time weather forecast** | The demo uses actual historical weather (perfect hindsight). In production, multi-day weather forecasts degrade past day 3-4 — the model would inherit that forecast error. | The API exists (Open-Meteo Forecast) and a client is built (`src/data/weather_forecast.py`), but the demo evaluates on 2025 using archive weather for a fair like-for-like comparison with training. |
-| **Social / viral events** | A TikTok trend or cycling campaign could temporarily spike demand. | No structured data source exists. |
-| **Competitor transport changes** | Lime / Uber bike availability, e-scooter regulation changes affect Santander usage. | No historical archive. |
-"""
-)
+    )
+
 
 st.caption(
     "Code: github.com/tmbellau/restaurant-test • "
