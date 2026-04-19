@@ -94,7 +94,7 @@ with col1:
         showlegend=False,
     )
     fig.update_yaxes(range=[0, max(horizon_stats["wape"] * 100) * 1.2])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with col2:
     fig = go.Figure()
@@ -118,7 +118,7 @@ with col2:
         showlegend=False,
     )
     fig.update_yaxes(range=[0, 100])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ============ Full year line chart ============
@@ -161,7 +161,7 @@ fig.update_layout(
     margin=dict(l=0, r=0, t=20, b=0),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 
 # ============ Error scatter + distribution ============
@@ -184,7 +184,7 @@ with col1:
             "Actual: %{x:.0f}<br>Predicted: %{y:.0f}<br>"
             "Error: %{customdata[1]:+.0f}<extra></extra>"
         ),
-        customdata=np.stack([h1["target"], h1["error"]], axis=-1),
+        customdata=list(zip(h1["target"].dt.strftime("%a %b %d"), h1["error"].round(0))),
     ))
     lo = min(h1["actual"].min(), h1["predicted"].min()) * 0.9
     hi = max(h1["actual"].max(), h1["predicted"].max()) * 1.05
@@ -201,7 +201,7 @@ with col1:
         height=420,
         margin=dict(l=0, r=0, t=40, b=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with col2:
     pct = h1["pct_error"].replace([np.inf, -np.inf], np.nan).dropna()
@@ -225,7 +225,7 @@ with col2:
         margin=dict(l=0, r=0, t=40, b=0),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ============ Monthly breakdown ============
@@ -252,7 +252,7 @@ with col1:
     fig.update_layout(height=340, margin=dict(l=0, r=0, t=40, b=0),
                       showlegend=False, coloraxis_showscale=False)
     fig.update_traces(texttemplate="%{y:.1f}%", textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 with col2:
     fig = px.bar(
@@ -266,7 +266,7 @@ with col2:
     fig.update_layout(height=340, margin=dict(l=0, r=0, t=40, b=0),
                       showlegend=False, coloraxis_showscale=False)
     fig.update_traces(texttemplate="%{y:.0f}%", textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 st.markdown("---")
@@ -301,5 +301,5 @@ display["pct_error"] = display["pct_error"].round(1)
 display["in_interval"] = display["in_interval"].map({True: "✓", False: "✗"})
 display.columns = ["Date", "DoW", "h", "Lower", "Pred", "Upper", "Actual", "Err", "% Err", "In"]
 
-st.dataframe(display, use_container_width=True, hide_index=True, height=400)
+st.dataframe(display, width="stretch", hide_index=True, height=400)
 st.caption(f"{len(filtered)} rows shown")

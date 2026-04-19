@@ -198,7 +198,7 @@ fig.update_layout(
     coloraxis_showscale=False,
     yaxis_title=None, xaxis_title="Split count (relative importance)",
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 st.markdown("""
 **Observations:**

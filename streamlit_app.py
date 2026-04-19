@@ -273,7 +273,7 @@ fig.update_layout(
 fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
 fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 
 # ----- Table -----
@@ -316,7 +316,7 @@ def _highlight(row):
     return [color] * len(row)
 
 
-st.dataframe(display.style.apply(_highlight, axis=1), use_container_width=True, hide_index=True)
+st.dataframe(display.style.apply(_highlight, axis=1), width="stretch", hide_index=True)
 
 
 # ----- KPIs -----
