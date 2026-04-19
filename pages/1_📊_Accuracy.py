@@ -19,7 +19,10 @@ st.set_page_config(page_title="Accuracy â€” Soho Cycles Forecast", page_icon="ðŸ
 
 @st.cache_data(show_spinner=False)
 def load_eval() -> pd.DataFrame:
-    df = pd.read_parquet("data/training/eval_2025.parquet")
+    # Prefer the horizon-aware evaluation (intervals widen with horizon)
+    ha_path = Path("data/training/eval_2025_horizon_aware.parquet")
+    legacy_path = Path("data/training/eval_2025.parquet")
+    df = pd.read_parquet(ha_path if ha_path.exists() else legacy_path)
     df["target"] = pd.to_datetime(df["target"])
     return df
 

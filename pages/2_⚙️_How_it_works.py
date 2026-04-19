@@ -18,26 +18,32 @@ st.set_page_config(page_title="How it works — Soho Cycles Forecast",
 
 @st.cache_resource(show_spinner=False)
 def load_median_model():
-    """Prefer native Booster txt; fall back to sklearn pickle."""
-    txt_path = Path("data/models/lgbm_daily_q50.txt")
-    pkl_path = Path("data/models/lgbm_daily_q50.pkl")
-    if txt_path.exists():
-        booster = lgb.Booster(model_file=str(txt_path))
-        # Wrap importances into a uniform structure we can read
-        importances = booster.feature_importance(importance_type="split")
-        names_in_model = booster.feature_name()
-        return {"booster": booster, "importances": importances, "feature_names": names_in_model}
-    with open(pkl_path, "rb") as fh:
+    """Prefer horizon-aware median model; fall back to earlier models."""
+    for txt in ["data/models/lgbm_horizon_q50.txt", "data/models/lgbm_daily_q50.txt"]:
+        p = Path(txt)
+        if p.exists():
+            booster = lgb.Booster(model_file=str(p))
+            return {
+                "booster": booster,
+                "importances": booster.feature_importance(importance_type="split"),
+                "feature_names": booster.feature_name(),
+            }
+    # Ultimate fallback
+    with open("data/models/lgbm_daily_q50.pkl", "rb") as fh:
         model = pickle.load(fh)
-    return {"booster": None, "importances": model.feature_importances_,
-            "feature_names": json.loads(Path("data/models/quantile_feature_names.json").read_text()),
-            "sklearn_model": model}
+    return {
+        "booster": None,
+        "importances": model.feature_importances_,
+        "feature_names": json.loads(Path("data/models/quantile_feature_names.json").read_text()),
+    }
 
 
 @st.cache_data(show_spinner=False)
 def load_metrics():
-    metrics = json.loads(Path("data/models/quantile_metrics.json").read_text())
-    return metrics
+    for p in ["data/models/horizon_aware_metrics.json", "data/models/quantile_metrics.json"]:
+        if Path(p).exists():
+            return json.loads(Path(p).read_text())
+    return {}
 
 
 @st.cache_data(show_spinner=False)
@@ -169,18 +175,47 @@ trees' outputs are summed together. The model uses the
 rather than the mean.
 
 To turn the three quantile predictions into a calibrated 80% interval, we add
-a **conformal buffer**: we look at how often the raw [q05, q95] interval
-contains actual values on held-out calibration data and widen the interval by
-a fixed amount until empirical coverage hits 80%.
+a **per-horizon conformal buffer**: for each forecast horizon (1 to 7 days),
+we look at how large the model's errors were on a fully held-out year (2024
+— not seen during training) and widen the interval by the amount needed to
+achieve 80% coverage at that specific horizon.
+
+**Why this gives organic horizon-dependent uncertainty:**
+
+Models are trained on multi-horizon data. For each historical day, we
+generate 7 training rows — one per forecast horizon — with the lag features
+substituted as they would appear at that horizon (at h=7, covers_1d_lag
+uses the value from 7 days ago, not 1 day ago). The model therefore sees
+how feature staleness affects error magnitude, and the raw quantile
+predictions reflect this.
+
+The per-horizon buffer is then computed directly from the distribution
+of errors at each horizon on the held-out year. Since 7-day-ahead errors
+are genuinely larger than 1-day-ahead errors (the data shows this), the
+7-day buffer is genuinely larger — nothing hand-tuned, nothing arbitrary.
 """
 )
 
 metrics = load_metrics()
 col1, col2, col3 = st.columns(3)
 col1.metric("Features", metrics.get("n_features", "?"))
-col2.metric("Training days", metrics.get("n_training_rows", "?"))
-col3.metric("Conformal buffer", f"±{metrics.get('conformal_buffer', 0):.0f} trips",
-            help="Added to raw quantile predictions to guarantee 80% coverage.")
+col2.metric("Training rows", metrics.get("n_training_rows", "?"))
+col3.metric("Calibration year", metrics.get("calibrate_year", "—"),
+            help="Held-out year used to compute the per-horizon conformal buffer.")
+
+# Show per-horizon buffers — these are the organic uncertainty widenings
+per_h = metrics.get("per_horizon_buffer", {})
+if per_h:
+    st.subheader("Per-horizon conformal buffer — learned from data")
+    st.caption("These numbers are NOT hand-tuned. They come directly from how large the "
+               "model's errors were at each horizon on a held-out year.")
+    buf_df = pd.DataFrame([
+        {"Horizon": f"{int(k)} day{'s' if int(k)>1 else ''} ahead",
+         "Buffer (±trips)": f"{float(v):.0f}",
+         "Avg interval width": f"{float(metrics.get('interval_width_per_horizon', {}).get(str(k), 0)):.0f}"}
+        for k, v in sorted(per_h.items(), key=lambda x: int(x[0]))
+    ])
+    st.dataframe(buf_df, hide_index=True)
 
 st.markdown("---")
 

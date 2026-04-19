@@ -32,6 +32,7 @@ data/holdout/
 data/training/*
 !data/training/daily_training_features.parquet
 !data/training/eval_2025.parquet
+!data/training/eval_2025_horizon_aware.parquet
 
 # Model artefacts: keep only the quantile ensemble used by the app
 data/models/*
@@ -41,6 +42,11 @@ data/models/*
 !data/models/lgbm_daily_q05.txt
 !data/models/lgbm_daily_q50.txt
 !data/models/lgbm_daily_q95.txt
+!data/models/lgbm_horizon_q05.txt
+!data/models/lgbm_horizon_q50.txt
+!data/models/lgbm_horizon_q95.txt
+!data/models/horizon_aware_feature_names.json
+!data/models/horizon_aware_metrics.json
 !data/models/quantile_feature_names.json
 !data/models/quantile_metrics.json
 !data/models/daily_training_metrics.json

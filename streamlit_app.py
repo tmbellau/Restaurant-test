@@ -38,23 +38,28 @@ def load_daily() -> tuple[pd.DataFrame, dict, dict]:
 
 
 @st.cache_resource(show_spinner=False)
-def load_models() -> tuple[dict, list[str], float]:
-    """Load the three quantile models. Prefer native Booster txt format
-    (no sklearn dependency) and fall back to sklearn pickle."""
+def load_models() -> tuple[dict, list[str], dict[int, float]]:
+    """Load horizon-aware quantile models + per-horizon conformal buffers.
+
+    Returns (models, feature_names, buffer_by_horizon). The horizon-aware
+    models take `horizon_days` as a feature and output quantile predictions
+    that widen with horizon because they were trained on multi-horizon data.
+    The per-horizon buffer is calibrated on a held-out year's residuals.
+    """
     model_dir = Path("data/models")
-    features = json.loads((model_dir / "quantile_feature_names.json").read_text())
-    metrics = json.loads((model_dir / "quantile_metrics.json").read_text())
-    buffer = float(metrics.get("conformal_buffer", 0))
+    features = json.loads((model_dir / "horizon_aware_feature_names.json").read_text())
+    metrics = json.loads((model_dir / "horizon_aware_metrics.json").read_text())
+    buffers = {int(k): float(v) for k, v in metrics["per_horizon_buffer"].items()}
     models = {}
     for name, alpha in [("lower", 5), ("median", 50), ("upper", 95)]:
-        txt_path = model_dir / f"lgbm_daily_q{alpha:02d}.txt"
-        pkl_path = model_dir / f"lgbm_daily_q{alpha:02d}.pkl"
+        txt_path = model_dir / f"lgbm_horizon_q{alpha:02d}.txt"
+        pkl_path = model_dir / f"lgbm_horizon_q{alpha:02d}.pkl"
         if txt_path.exists():
             models[name] = lgb.Booster(model_file=str(txt_path))
         else:
             with open(pkl_path, "rb") as fh:
                 models[name] = pickle.load(fh)
-    return models, features, buffer
+    return models, features, buffers
 
 
 @st.cache_data(show_spinner=False)
@@ -95,7 +100,12 @@ def recompute_lags(base_row: pd.Series, target: date, origin: date,
     return row
 
 
-def predict_one(models: dict, features: list[str], row: pd.Series, buffer: float) -> dict:
+def predict_one(models: dict, features: list[str], row: pd.Series,
+                horizon: int, buffers: dict[int, float]) -> dict:
+    """Predict for a single target with its horizon embedded and the
+    horizon-specific conformal buffer applied."""
+    row = row.copy()
+    row["horizon_days"] = int(horizon)
     X = pd.DataFrame([row[features]])
     for c in CATEGORICAL:
         if c in X.columns:
@@ -103,30 +113,29 @@ def predict_one(models: dict, features: list[str], row: pd.Series, buffer: float
     for col in X.columns:
         if X[col].dtype == object and col not in CATEGORICAL:
             X[col] = pd.to_numeric(X[col], errors="coerce")
-    # Booster.predict returns array directly; sklearn wrapper's predict
-    # returns array too. Both return shape (n_samples,). Booster requires
-    # numeric input, not pandas categoricals.
     preds = {}
     for name, m in models.items():
         if isinstance(m, lgb.Booster):
             X_num = X.copy()
             for c in CATEGORICAL:
                 if c in X_num.columns:
-                    # Map categorical to its integer code (Booster expects numeric)
                     X_num[c] = X_num[c].cat.codes.astype(float) if hasattr(X_num[c], "cat") else 0
             preds[name] = float(max(0, m.predict(X_num.values)[0]))
         else:
             preds[name] = float(max(0, m.predict(X)[0]))
+    # Per-horizon buffer widens the interval based on observed residuals at this horizon
+    buf = buffers.get(int(horizon), 0.0)
     return {
-        "lower": max(0, preds["lower"] - buffer),
+        "lower": max(0, preds["lower"] - buf),
         "predicted": preds["median"],
-        "upper": preds["upper"] + buffer,
+        "upper": preds["upper"] + buf,
+        "horizon_buffer": buf,
     }
 
 
 def run_forecast(origin: date, days: int = 7) -> pd.DataFrame:
     daily, idx, actuals = load_daily()
-    models, features, buffer = load_models()
+    models, features, buffers = load_models()
     rows = []
     for h in range(1, days + 1):
         t = origin + timedelta(days=h)
@@ -134,11 +143,13 @@ def run_forecast(origin: date, days: int = 7) -> pd.DataFrame:
             continue
         row = daily.iloc[idx[t]].copy()
         row = recompute_lags(row, t, origin, actuals)
-        q = predict_one(models, features, row, buffer)
+        q = predict_one(models, features, row, horizon=h, buffers=buffers)
         actual = actuals.get(t, None)
         rows.append({
             "target": t, "horizon": h, "dow": t.strftime("%a"),
             "lower": q["lower"], "predicted": q["predicted"], "upper": q["upper"],
+            "interval_width": q["upper"] - q["lower"],
+            "horizon_buffer": q["horizon_buffer"],
             "actual": actual,
             "temp_mean_c": float(row.get("temp_mean_c", np.nan)),
             "precipitation_total_mm": float(row.get("precipitation_total_mm", np.nan)),

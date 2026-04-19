@@ -46,5 +46,6 @@
   "sunrise_hour",
   "sunset_hour",
   "is_tube_strike",
-  "days_since_tube_strike"
+  "days_since_tube_strike",
+  "horizon_days"
 ]
