@@ -79,10 +79,6 @@ def recompute_features_for_horizon(
 
 
 def main() -> None:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     from src.data.build_daily_training_set import aggregate_to_daily
 
     print("Loading data...")
@@ -185,56 +181,6 @@ def main() -> None:
                 row_str += "   -   "
         print(row_str)
 
-    # === Visualization ===
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [1, 1.5]})
-
-    # Top: WAPE by horizon bar chart
-    ax = axes[0]
-    horizon_stats = []
-    for h in range(1, 8):
-        seg = df[df["horizon"] == h]
-        wape = seg["abs_error"].sum() / max(seg["actual"].sum(), 1e-8)
-        horizon_stats.append({"horizon": h, "wape": wape})
-    hs = pd.DataFrame(horizon_stats)
-    colors = [plt.cm.RdYlGn(1.0 - w) for w in hs["wape"]]
-    bars = ax.bar(hs["horizon"], hs["wape"] * 100, color=colors,
-                  edgecolor="black", linewidth=0.5, width=0.6)
-    for bar, w in zip(bars, hs["wape"]):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                f"{w:.1%}", ha="center", fontsize=11, fontweight="bold")
-    ax.set_xlabel("Forecast Horizon (days ahead)", fontsize=12)
-    ax.set_ylabel("WAPE (%)", fontsize=12)
-    ax.set_title("Does accuracy improve as forecast horizon shrinks?",
-                 fontsize=14, fontweight="bold")
-    ax.set_xticks(range(1, 8))
-    ax.set_xticklabels([f"{h} day" for h in range(1, 8)])
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # Bottom: predictions converging on actual for each day
-    ax2 = axes[1]
-    for t in targets_sorted:
-        sub = df[df["target"] == t].sort_values("horizon", ascending=False)
-        actual = actuals_dict[t]
-        preds_by_h = sub.set_index("horizon")["predicted"]
-        xs = list(range(7, 0, -1))
-        ys = [preds_by_h.get(h, np.nan) for h in xs]
-        ax2.plot(xs, ys, alpha=0.25, color="steelblue", linewidth=0.8)
-        ax2.scatter([1], [ys[-1]], s=15, color="steelblue", zorder=3, alpha=0.4)
-    # Overlay actuals
-    target_dates_num = list(range(len(targets_sorted)))
-    ax2.set_xlabel("Days before target (7 = earliest, 1 = final forecast)", fontsize=12)
-    ax2.set_ylabel("Predicted value", fontsize=12)
-    ax2.set_title("30 target days × 7 forecasts each — how predictions evolve",
-                  fontsize=13, fontweight="bold")
-    ax2.set_xticks(range(1, 8))
-    ax2.set_xticklabels([f"{h}d out" for h in range(1, 8)])
-    ax2.invert_xaxis()
-    ax2.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    out_path = Path("data/holdout/rolling_7day_forecast.png")
-    plt.savefig(out_path, dpi=110, bbox_inches="tight")
-    print(f"\nPlot saved: {out_path}")
     df.to_parquet("data/holdout/rolling_7day_forecast.parquet", index=False)
 
 
