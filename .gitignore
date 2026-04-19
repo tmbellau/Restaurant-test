@@ -36,10 +36,10 @@ data/training/*
 
 # Model artefacts: keep only the quantile ensemble used by the app
 data/models/*
-!data/models/lgbm_horizon_q05.txt
-!data/models/lgbm_horizon_q50.txt
-!data/models/lgbm_horizon_q95.txt
-!data/models/horizon_aware_feature_names.json
+!data/models/lgbm_daily_q05.txt
+!data/models/lgbm_daily_q50.txt
+!data/models/lgbm_daily_q95.txt
+!data/models/quantile_feature_names.json
 !data/models/horizon_aware_metrics.json
 .DS_Store
 *.swp

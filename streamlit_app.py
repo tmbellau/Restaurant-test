@@ -46,13 +46,15 @@ def load_daily() -> tuple[pd.DataFrame, dict, dict]:
 
 @st.cache_resource(show_spinner=False)
 def load_models() -> tuple[dict, list[str], dict[int, float], dict]:
+    """Load the three quantile models (5th/50th/95th percentile) and the
+    per-horizon calibration buffer."""
     model_dir = Path("data/models")
-    features = json.loads((model_dir / "horizon_aware_feature_names.json").read_text())
+    features = json.loads((model_dir / "quantile_feature_names.json").read_text())
     metrics = json.loads((model_dir / "horizon_aware_metrics.json").read_text())
     buffers = {int(k): float(v) for k, v in metrics["per_horizon_buffer"].items()}
     models = {}
     for name, alpha in [("lower", 5), ("median", 50), ("upper", 95)]:
-        txt_path = model_dir / f"lgbm_horizon_q{alpha:02d}.txt"
+        txt_path = model_dir / f"lgbm_daily_q{alpha:02d}.txt"
         models[name] = lgb.Booster(model_file=str(txt_path))
     return models, features, buffers, metrics
 
@@ -95,8 +97,6 @@ def recompute_lags(base_row: pd.Series, target: date, origin: date,
 
 def predict_one(models: dict, features: list[str], row: pd.Series,
                 horizon: int, buffers: dict[int, float]) -> dict:
-    row = row.copy()
-    row["horizon_days"] = int(horizon)
     X = pd.DataFrame([row[features]])
     for c in CATEGORICAL:
         if c in X.columns:
@@ -158,15 +158,13 @@ overall_cov = eval_ok["in_interval"].mean()
 overall_wape = eval_ok["abs_err"].sum() / eval_ok["actual"].abs().sum()
 h1_wape = (h1["predicted"] - h1["actual"]).abs().sum() / h1["actual"].abs().sum()
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("1-day-ahead WAPE", f"{h1_wape:.1%}",
-          help="Weighted average % error predicting tomorrow. Computed on 1-day-ahead predictions only (the most accurate horizon).")
-c2.metric("80% interval coverage", f"{overall_cov:.0%}",
-          help="Actuals fall inside the prediction interval this often — target is 80%, achieved via conformal calibration.")
-c3.metric("Training data", "6 years (2017-2024)",
-          help="Excluding 2020-2021 COVID. 2,264 training days of real Santander trip data.")
-c4.metric("Holdout (unseen)", "All of 2025",
-          help="Every metric on this page comes from 2025 data the model never saw during training.")
+          help="Average % error when forecasting tomorrow from today.")
+c2.metric("Training data", "6 years (2017-2024)",
+          help="Excludes 2020-2021 COVID. 2,264 training days.")
+c3.metric("Holdout (unseen)", "All of 2025",
+          help="Every number on this page comes from 2025 data the model didn't see during training.")
 
 # Executive summary — computed from the data
 _within_20 = (h1["pct_error"].abs() <= 20).mean() * 100
@@ -572,29 +570,16 @@ Produce a CONCISE, BULLET-POINT explanation using exactly these three markdown s
 - Stick to fields actually provided: temperature_c, rainfall_mm, day-of-week,
   bank_holiday, tube_strike_flagged.
 
-### ⚠️ Where the model missed (and why)
+### ⚠️ Where the model missed
 
-- List ONLY days where the actual was outside the 80% interval. For each such day:
-  - Quote the predicted vs actual trips and the interval bounds.
-  - State whether the MISS DIRECTION (over or under) aligns with any feature value in the
-    data (e.g., "the model predicted high because temperature was 18°C; actual was lower,
-    which is unexplained by visible features").
-  - If no visible feature in the data explains the miss, state that clearly in ONE
-    sentence, then add ONE sentence naming the most likely *category* of unseen factor
-    based on the time of year, day of week, and magnitude of the miss. Examples:
-    "No feature in the provided data explains this 400-trip underprediction on a Friday
-    evening — most likely a local event or entertainment draw not in the model's calendar."
-    Or: "The 300-trip overprediction on this wet Monday is unexplained by the visible
-    features — possibly an untracked transport disruption that reduced cycling."
-    Keep it to two sentences max. Do NOT invent specific events (no "likely a concert
-    at the O2", no "strike rumours") — name the category only.
-- DO NOT invent unobserved causes like "possible strike rumours", "reported tube delays",
-  "event in the area", or weather forecasts differing from actuals — the data shows the
-  real weather and the real strike flag. If you cannot tie the miss to a number in the
-  JSON above, say the model has no visible reason.
-- If all days were inside the interval, write a single bullet: "All days fell inside the
-  80% interval. The week's structural features (weather, calendar) matched typical patterns
-  the model learned."
+- ONE short bullet per day that was outside the 80% interval (skip days inside).
+- Format: "[Day, date]: predicted X, actual Y. [reason]."
+- For `[reason]`: if a feature value in the data plausibly explains the direction
+  of the miss, state it in a clause (e.g., "model was high because temp was 18°C"). If no
+  feature explains it, add a single-clause guess at the category only — "probably a local
+  event", "probably an untracked transport issue", "unexplained by visible inputs".
+- Do NOT invent specific events (no "possible concert", no "rumoured strike"). Category only.
+- If every day was inside the interval, write just: "All days fell inside the 80% interval."
 
 ## Hard rules
 
@@ -743,7 +728,7 @@ with tab_perf:
         )
         fig.update_yaxes(range=[0, 100])
         st.plotly_chart(fig, width="stretch")
-        st.caption("Actuals fall inside the interval ~80% of the time at every horizon — by design (conformal calibration).")
+        st.caption("Actuals fall inside the interval ~80% of the time at every horizon — that's the target the interval is calibrated to hit.")
 
     # Monthly WAPE breakdown
     st.markdown("##### Accuracy month by month (1-day-ahead)")
@@ -773,14 +758,16 @@ with tab_perf:
     st.plotly_chart(fig, width="stretch")
     st.markdown(
         """
-    **Why is winter (especially January) less accurate?**
+    **Why is winter less accurate?** Two things add up:
 
-    Mostly one reason: **lower volume amplifies percentage error.** January averages ~680 trips/day
-    vs ~1,800 in June. The model's **absolute** error is actually similar across months (~150-200
-    trips MAE), but dividing that by 680 in January gives ~21% WAPE while dividing by 1,800 in
-    June gives ~8%. It's a percentage-arithmetic artefact, not a meaningful quality difference.
-    The model is about as good in absolute terms year-round; it just looks worse in ratio terms
-    when the baseline is low.
+    1. **Low volume amplifies percentage error.** January averages ~680 trips/day vs ~1,800
+       in June. Even the same absolute miss looks bigger as a percentage of a smaller number.
+
+    2. **Absolute error is also higher in January.** Daily MAE is ~150 trips in January
+       vs ~120 in June. The first weeks of 2025 had tube strikes and a cold/wet spell that
+       caused bigger day-to-day swings. The model can see the weather but not everything
+       else that drives winter demand — local events, untracked transport issues,
+       post-holiday behaviour — so more of the variance is unexplained by its inputs.
 
     All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
     on **1-day-ahead** predictions only (the most accurate horizon).
@@ -811,13 +798,11 @@ with tab_under:
                                      "bank holidays + days-to/from, England school holidays, "
                                      "cultural events (Marathon, Pride, Carnival, Wimbledon, NYE), "
                                      "known tube-strike days + days-since.",
-            "☀️ **Daylight** (3)": "Sunrise hour, sunset hour, daylight hours — astronomically "
-                                    "calculated from the date. Deterministic, never wrong.",
-            "🔁 **Demand history** (9)": "Cover count 1 / 7 / 14 / 28 / 365 days ago, rolling 7d and "
-                                          "28d means, rolling 7d volatility. Horizon-aware: stale at "
-                                          "longer horizons.",
-            "📊 **Horizon** (1)": "How far ahead we're forecasting (1 to 7 days). The model learns "
-                                   "that stale lag features come with wider uncertainty.",
+            "☀️ **Daylight** (3)": "Sunrise hour, sunset hour, daylight hours — calculated from "
+                                    "the date and London's latitude. Always exact, never forecast.",
+            "🔁 **Recent trips** (9)": "Trip count from yesterday, 1 week ago, 2 weeks ago, 4 weeks "
+                                         "ago and 1 year ago, plus 7-day and 28-day rolling averages, "
+                                         "plus a 7-day volatility measure.",
         }
         for title, desc in groups.items():
             st.markdown(f"{title}")
@@ -858,19 +843,18 @@ with tab_under:
     st.header("How it works")
     st.markdown(
         """
-    **The target.** Daily count of Santander Cycles trips at Soho-area docking stations
-    (Moor Street, Wardour Street, Broadwick Street, Golden Square and nearby West End stations).
-    Data from TfL's public open-data bucket, 4.25 million trips since 2017.
+    **What we predict.** The number of Santander Cycles trips per day at Soho-area docking
+    stations (Moor Street, Wardour Street, Broadwick Street, Golden Square and nearby West
+    End stations). 4.25 million trips since 2017, all from TfL's public data bucket.
 
-    **The model.** Three LightGBM gradient-boosted trees predicting the 5th, 50th, and 95th
-    percentile of demand given the 49 input features. Each is an ensemble of ~500 trees;
-    training minimises pinball loss (asymmetric, targets the specified percentile).
+    **The model.** Three LightGBM tree-boosting models working together — one predicting
+    the low end (5th percentile), one the middle (50th), one the high end (95th). Each is
+    an ensemble of ~500 decision trees.
 
-    **The prediction intervals.** The raw quantile predictions are widened by a conformal
-    calibration buffer — we look at how often the raw [5th, 95th] interval contains actual
-    values on held-out data and add exactly the amount needed to achieve 80% empirical
-    coverage on 2025. No hand-tuned multiplier; the buffer comes directly from observed
-    residuals.
+    **The prediction interval.** The raw [low, high] gap from the models is often too
+    narrow. We measure how often actuals fall outside it on held-out data and widen the
+    interval by exactly the amount needed to cover 80% of actuals. That widening comes
+    directly from observed errors — no hand-tuning.
     """
     )
 
