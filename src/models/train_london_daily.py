@@ -39,6 +39,30 @@ SHORT_HORIZON_LAGS = {
     "covers_7d_std",
 }
 
+# Feature groupings for ablation studies.
+FEATURE_GROUPS = {
+    "weather": [
+        "temp_mean_c", "temp_min_c", "temp_max_c", "temp_anomaly_mean_c",
+        "apparent_temp_mean_c", "wind_speed_mean_kmh", "precipitation_total_mm",
+        "is_wet_day", "rain_streak", "temp_change_c", "temp_shock",
+        "cold_weekend", "hot_day", "weather_code_max", "severe_weather",
+    ],
+    "calendar": [
+        "is_bank_holiday", "is_school_holiday", "is_cultural_period",
+        "days_to_next_holiday", "days_from_last_holiday",
+        "days_to_next_cultural", "days_from_last_cultural",
+        "dow", "is_weekend", "month", "week_of_year", "day_of_year",
+        "dow_sin", "dow_cos", "doy_sin", "doy_cos",
+        "is_tube_strike", "days_since_tube_strike",
+    ],
+    "daylight": ["daylight_hours", "sunrise_hour", "sunset_hour"],
+    "lags": [
+        "covers_1d_lag", "covers_7d_lag", "covers_14d_lag", "covers_28d_lag",
+        "covers_365d_lag", "covers_7d_mean", "covers_28d_mean", "covers_7d_std",
+        "covers_same_dow_last_week",
+    ],
+}
+
 DEFAULT_PARAMS = {
     "objective": "quantile",
     "alpha": 0.5,
@@ -55,12 +79,22 @@ DEFAULT_PARAMS = {
 
 
 def prepare_xy(
-    df: pd.DataFrame, exclude_short_lags: bool = False
+    df: pd.DataFrame,
+    exclude_short_lags: bool = False,
+    only_groups: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, list[str]]:
     excluded = set(EXCLUDE_COLS)
     if exclude_short_lags:
         excluded |= SHORT_HORIZON_LAGS
-    feature_cols = [c for c in df.columns if c not in excluded]
+
+    if only_groups is not None:
+        keep: set[str] = set()
+        for g in only_groups:
+            keep |= set(FEATURE_GROUPS.get(g, []))
+        feature_cols = [c for c in df.columns if c in keep and c not in excluded]
+    else:
+        feature_cols = [c for c in df.columns if c not in excluded]
+
     X = df[feature_cols].copy()
     y = df["cover_count"].copy()
 
@@ -91,12 +125,23 @@ def train(
     coverage: float = 0.80,
     exclude_short_lags: bool = False,
     model_suffix: str = "",
+    train_end_date: str | None = None,
+    only_groups: list[str] | None = None,
 ) -> dict:
     input_path = input_path or DEFAULT_INPUT
     model_dir = model_dir or DEFAULT_MODEL_DIR
     model_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_parquet(input_path)
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Gate training data by date (e.g. everything strictly before 2024-01-01).
+    if train_end_date is not None:
+        cutoff = pd.Timestamp(train_end_date)
+        before = len(df)
+        df = df[df["date"] <= cutoff].reset_index(drop=True)
+        log.info("daily_train.train_gated", rows_before=before, rows_after=len(df), cutoff=train_end_date)
+
     # Drop rows where essential lag features are NaN (first ~365 days)
     df = df.dropna(subset=["covers_7d_lag", "covers_7d_mean"]).reset_index(drop=True)
     log.info(
@@ -104,9 +149,10 @@ def train(
         rows=len(df),
         date_range=f"{df['date'].min().date()} to {df['date'].max().date()}",
         exclude_short_lags=exclude_short_lags,
+        only_groups=only_groups,
     )
 
-    X, y, cats = prepare_xy(df, exclude_short_lags=exclude_short_lags)
+    X, y, cats = prepare_xy(df, exclude_short_lags=exclude_short_lags, only_groups=only_groups)
     feature_cols = list(X.columns)
 
     # Walk-forward CV
@@ -191,12 +237,19 @@ def main() -> None:
              "from weather/calendar. Needed for multi-day-ahead forecasts."
     )
     parser.add_argument("--model-suffix", type=str, default="")
+    parser.add_argument("--train-end", type=str, default=None,
+                        help="Max date (inclusive) to include in training, e.g. 2023-12-31")
+    parser.add_argument("--only-groups", type=str, default=None,
+                        help="Comma-separated feature groups to include (weather,calendar,daylight,lags)")
     args = parser.parse_args()
+    groups = args.only_groups.split(",") if args.only_groups else None
     train(
         input_path=args.input,
         model_dir=args.model_dir,
         exclude_short_lags=args.exclude_short_lags,
         model_suffix=args.model_suffix,
+        train_end_date=args.train_end,
+        only_groups=groups,
     )
 
 

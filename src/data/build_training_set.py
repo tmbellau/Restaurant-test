@@ -153,7 +153,7 @@ def _log_provenance(
 ) -> None:
     log.info(
         "training.provenance",
-        location="Wagamama Soho (51.5131, -0.1318)",
+        location="Soho cycling stations (51.5131, -0.1318)",
         demand_target=(
             f"REAL — Santander Cycles hourly trip counts at Soho stations "
             f"({len(hourly)} hourly rows, "

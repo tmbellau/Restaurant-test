@@ -12,36 +12,50 @@ import httpx
 import pandas as pd
 import structlog
 
-from src.signals.base import BaseSignalSource
-
 log = structlog.get_logger(__name__)
 
-# UK school holidays 2024-2025 approximate windows (England).
-# In production these would be loaded from a DB table or curated JSON.
-_SCHOOL_HOLIDAYS_2024_25 = [
-    (date(2024, 7, 22), date(2024, 9, 2)),   # Summer
-    (date(2024, 10, 28), date(2024, 11, 1)),  # October half-term
-    (date(2024, 12, 23), date(2025, 1, 3)),   # Christmas
-    (date(2025, 2, 17), date(2025, 2, 21)),   # February half-term
-    (date(2025, 4, 7), date(2025, 4, 18)),    # Easter
-    (date(2025, 5, 26), date(2025, 5, 30)),   # May half-term
-    (date(2025, 7, 21), date(2025, 9, 1)),    # Summer
+# England school holidays (approximate windows).
+_SCHOOL_HOLIDAYS = [
+    # 2019
+    (date(2019, 2, 18), date(2019, 2, 22)),
+    (date(2019, 4, 8), date(2019, 4, 22)),
+    (date(2019, 5, 27), date(2019, 5, 31)),
+    (date(2019, 7, 22), date(2019, 9, 2)),
+    (date(2019, 10, 28), date(2019, 11, 1)),
+    (date(2019, 12, 23), date(2020, 1, 3)),
+    # 2022
+    (date(2022, 2, 14), date(2022, 2, 18)),
+    (date(2022, 4, 4), date(2022, 4, 18)),
+    (date(2022, 5, 30), date(2022, 6, 3)),
+    (date(2022, 7, 25), date(2022, 9, 2)),
+    (date(2022, 10, 24), date(2022, 10, 28)),
+    (date(2022, 12, 19), date(2023, 1, 2)),
+    # 2023
+    (date(2023, 2, 13), date(2023, 2, 17)),
+    (date(2023, 4, 3), date(2023, 4, 14)),
+    (date(2023, 5, 29), date(2023, 6, 2)),
+    (date(2023, 7, 24), date(2023, 9, 1)),
+    (date(2023, 10, 23), date(2023, 10, 27)),
+    (date(2023, 12, 18), date(2024, 1, 1)),
+    # 2024
+    (date(2024, 2, 12), date(2024, 2, 16)),
+    (date(2024, 3, 28), date(2024, 4, 12)),
+    (date(2024, 5, 27), date(2024, 5, 31)),
+    (date(2024, 7, 22), date(2024, 9, 2)),
+    (date(2024, 10, 28), date(2024, 11, 1)),
+    (date(2024, 12, 23), date(2025, 1, 3)),
+    # 2025
+    (date(2025, 2, 17), date(2025, 2, 21)),
+    (date(2025, 4, 7), date(2025, 4, 18)),
+    (date(2025, 5, 26), date(2025, 5, 30)),
+    (date(2025, 7, 21), date(2025, 9, 1)),
 ]
 
 
-class HolidaySource(BaseSignalSource):
-    source_name = "holidays"
-    refresh_interval_seconds = 7 * 86400  # weekly
-    feature_columns = [
-        "is_bank_holiday",
-        "bank_holiday_name",
-        "is_school_holiday",
-        "days_to_next_holiday",
-        "days_from_last_holiday",
-    ]
+class HolidaySource:
+    """UK bank holidays (gov.uk) + England school holidays."""
 
     def __init__(self) -> None:
-        super().__init__()
         self._bank_holidays: dict[date, str] | None = None
 
     def _fetch_bank_holidays(self) -> dict[date, str]:
@@ -60,7 +74,7 @@ class HolidaySource(BaseSignalSource):
         return hols
 
     def _is_school_holiday(self, d: date) -> bool:
-        return any(start <= d <= end for start, end in _SCHOOL_HOLIDAYS_2024_25)
+        return any(start <= d <= end for start, end in _SCHOOL_HOLIDAYS)
 
     def _fetch_raw_impl(
         self, restaurant_id: str, start_utc: datetime, end_utc: datetime
@@ -99,15 +113,3 @@ class HolidaySource(BaseSignalSource):
                 "days_from_last_holiday": days_from or 999,
             })
         return pd.DataFrame(rows)
-
-    def transform_to_features(self, raw_df: pd.DataFrame) -> pd.DataFrame:
-        return raw_df
-
-    def get_feature_schema(self) -> dict[str, str]:
-        return {
-            "is_bank_holiday": "bool",
-            "bank_holiday_name": "str",
-            "is_school_holiday": "bool",
-            "days_to_next_holiday": "int",
-            "days_from_last_holiday": "int",
-        }

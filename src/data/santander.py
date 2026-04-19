@@ -1,16 +1,12 @@
-"""TfL Santander Cycles trip data → hourly demand target for Wagamama Soho.
+"""TfL Santander Cycles trip data → daily trip count target for Soho.
 
 Data source: https://cycling.data.tfl.gov.uk/usage-stats/ (TfL Open Data, OGLv2)
 
 Each weekly CSV contains per-trip records with start/end timestamp and station.
-We filter to Soho-area docking stations, aggregate trip starts+ends to hourly
-counts, and use that as the real per-date hourly demand signal.
-
-Why cycling as a restaurant demand proxy?
-    Cycling trips in a specific area correlate strongly with: weather (cycling
-    is very weather-sensitive), time-of-day patterns, bank holidays, major
-    events, and tourist activity. The *sensitivities* the model needs to learn
-    are all captured — even if it's cyclists, not diners.
+We filter to Soho-area docking stations and aggregate trip starts+ends to
+per-date counts. Target: daily Santander trips at Soho stations — a real,
+freely-available, location-specific demand signal driven by weather,
+holidays, events and temporal patterns.
 """
 
 from __future__ import annotations
@@ -47,9 +43,14 @@ NEARBY_STATIONS: dict[str, str] = {
     "300056": "Golden Square, Soho",
 }
 
-RESTAURANT_ID = "wagamama_soho"
-WAGAMAMA_SOHO_LAT = 51.5131
-WAGAMAMA_SOHO_LNG = -0.1318
+LOCATION_ID = "soho_cycles"
+SOHO_LAT = 51.5131
+SOHO_LNG = -0.1318
+
+# Kept as legacy aliases — many downstream modules import these names.
+RESTAURANT_ID = LOCATION_ID
+WAGAMAMA_SOHO_LAT = SOHO_LAT
+WAGAMAMA_SOHO_LNG = SOHO_LNG
 
 
 def list_weekly_files(
@@ -70,10 +71,24 @@ def list_weekly_files(
         if continuation:
             params["continuation-token"] = continuation
 
-        with httpx.Client(timeout=30) as client:
-            resp = client.get(S3_BUCKET + "/", params=params)
-            resp.raise_for_status()
-            xml = resp.text
+        import time
+        xml = None
+        for attempt in range(5):
+            try:
+                with httpx.Client(timeout=30) as client:
+                    resp = client.get(S3_BUCKET + "/", params=params)
+                    resp.raise_for_status()
+                    xml = resp.text
+                break
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (503, 502, 504) and attempt < 4:
+                    wait = 2 ** attempt
+                    log.info("santander.list.retry", attempt=attempt, wait=wait)
+                    time.sleep(wait)
+                    continue
+                raise
+        if xml is None:
+            raise RuntimeError("Failed to list S3 bucket after retries")
 
         root = ET.fromstring(xml)
         ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
@@ -134,11 +149,13 @@ def download_and_filter(
     s3_key: str,
     station_ids: set[str],
     cache_dir: Path | None = None,
+    station_names: set[str] | None = None,
 ) -> pd.DataFrame:
     """Download a weekly CSV, filter to target stations, return trip rows.
 
     Only keeps trips where EITHER start OR end station is in our set,
-    since both contribute to area footfall.
+    since both contribute to area footfall. Matches by station ID *or*
+    station name (for compatibility with pre-2022 CSVs whose IDs differ).
     """
     cache_dir = cache_dir or CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +184,8 @@ def download_and_filter(
 
     start_col = _find_col(df, ["Start station number", "StartStation Id", "Start Station Id"])
     end_col = _find_col(df, ["End station number", "EndStation Id", "End Station Id"])
+    start_name_col = _find_col(df, ["Start station", "StartStation Name", "Start Station Name"])
+    end_name_col = _find_col(df, ["End station", "EndStation Name", "End Station Name"])
     start_ts = _find_col(df, ["Start date", "Start Date"])
     end_ts = _find_col(df, ["End date", "End Date"])
 
@@ -174,16 +193,37 @@ def download_and_filter(
         log.warning("santander.file.skip", key=s3_key, cols=list(df.columns)[:8])
         return pd.DataFrame()
 
-    # Station numbers stored as strings with leading zeros — normalize to string
+    # Station IDs: 2022+ uses zero-padded 6-digit; 2019 uses plain integers.
+    # Station NAMES are stable across both eras — filter by name.
     df[start_col] = df[start_col].astype(str).str.strip().str.zfill(6)
     df[end_col] = df[end_col].astype(str).str.strip().str.zfill(6)
 
     mask = df[start_col].isin(station_ids) | df[end_col].isin(station_ids)
+
+    if start_name_col and end_name_col and station_names:
+        # Fallback/augment: match by normalised station name
+        def _norm(s: object) -> str:
+            return "".join(str(s).lower().split()).replace(",", "")
+        start_norm = df[start_name_col].map(_norm)
+        end_norm = df[end_name_col].map(_norm)
+        normset = {_norm(n) for n in station_names}
+        mask = mask | start_norm.isin(normset) | end_norm.isin(normset)
+
     filtered = df[mask].copy()
 
+    # Parse timestamps. Different eras use different formats; try ISO first
+    # then fall back to dayfirst dd/mm/yyyy.
+    def _parse_ts(series: pd.Series) -> pd.Series:
+        s1 = pd.to_datetime(series, errors="coerce", format="%Y-%m-%d %H:%M")
+        mask_nan = s1.isna()
+        if mask_nan.any():
+            s2 = pd.to_datetime(series.where(mask_nan), errors="coerce", dayfirst=True)
+            s1 = s1.fillna(s2)
+        return s1
+
     out = pd.DataFrame({
-        "start_ts": pd.to_datetime(filtered[start_ts], errors="coerce", dayfirst=True),
-        "end_ts": pd.to_datetime(filtered[end_ts], errors="coerce", dayfirst=True),
+        "start_ts": _parse_ts(filtered[start_ts]),
+        "end_ts": _parse_ts(filtered[end_ts]),
         "start_station": filtered[start_col],
         "end_station": filtered[end_col],
     }).dropna(subset=["start_ts"])
@@ -255,8 +295,10 @@ def load_santander_hourly(
     Returns hourly DataFrame: timestamp_utc, restaurant_id, cover_count, channel.
     """
     station_ids = set(SOHO_STATIONS.keys())
+    station_names = set(SOHO_STATIONS.values())
     if include_nearby:
         station_ids |= set(NEARBY_STATIONS.keys())
+        station_names |= set(NEARBY_STATIONS.values())
 
     log.info(
         "santander.load.start",
@@ -278,7 +320,7 @@ def load_santander_hourly(
             range=f"{fs.date()}-{fe.date()}",
         )
         try:
-            df = download_and_filter(key, station_ids, cache_dir=cache_dir)
+            df = download_and_filter(key, station_ids, cache_dir=cache_dir, station_names=station_names)
             if not df.empty:
                 all_trips.append(df)
         except Exception as e:
@@ -326,16 +368,23 @@ def load_santander_hourly(
     return hourly
 
 
-def restaurant_meta() -> pd.DataFrame:
+def location_meta() -> pd.DataFrame:
+    """Metadata for the target location (Soho Santander docking area)."""
     return pd.DataFrame([{
-        "restaurant_id": RESTAURANT_ID,
-        "name": "Wagamama Soho",
-        "lat": WAGAMAMA_SOHO_LAT,
-        "lng": WAGAMAMA_SOHO_LNG,
+        "restaurant_id": LOCATION_ID,  # column name kept for pipeline compatibility
+        "name": "Soho Cycles (aggregate of Soho/West End stations)",
+        "lat": SOHO_LAT,
+        "lng": SOHO_LNG,
         "timezone": "Europe/London",
         "country_code": "GB",
-        "seating_capacity": 100,
-        "turnover_rate_per_hour": 1.75,
+        # Below are inert pass-through fields required by the feature assembler.
+        # They carry no information for this target (single location).
+        "seating_capacity": 0,
+        "turnover_rate_per_hour": 0,
         "city_tier": "tier1",
         "footfall_zone_class": "very_high",
     }])
+
+
+# Legacy alias.
+restaurant_meta = location_meta

@@ -73,7 +73,7 @@ def run_smoke_test() -> None:
     cultural = build_uk_cultural_calendar(
         hourly["timestamp_utc"].min().date(),
         hourly["timestamp_utc"].max().date(),
-        "wagamama_soho",
+        "soho_cycles",
     )
     print(f"      {int(cultural['is_cultural_period'].sum())} cultural days")
 
@@ -96,7 +96,7 @@ def run_smoke_test() -> None:
             "restaurant_id", "seating_capacity", "turnover_rate_per_hour",
             "city_tier", "footfall_zone_class", "country_code",
         ]],
-        tz_map={"wagamama_soho": "Europe/London"},
+        tz_map={"soho_cycles": "Europe/London"},
     )
     print(f"      {len(features)} rows, {len(features.columns)} cols")
     assert "cover_count" in features.columns

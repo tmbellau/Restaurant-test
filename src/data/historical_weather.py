@@ -1,7 +1,7 @@
 """Fetch real historical weather from Open-Meteo for a single location.
 
 Open-Meteo Archive API: free, no key, 80+ years of hourly data globally.
-For this London-only pipeline we need one (lat, lng) = Wagamama Soho.
+For this London-only pipeline we need one (lat, lng) = Soho (51.5131, -0.1318).
 """
 
 from __future__ import annotations
@@ -62,10 +62,24 @@ def fetch_weather(
         "start_date": start_date,
         "end_date": end_date,
     }
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.get(OPEN_METEO_ARCHIVE, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    import time
+    data = None
+    for attempt in range(6):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(OPEN_METEO_ARCHIVE, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+            break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (503, 502, 504) and attempt < 5:
+                wait = 2 ** attempt
+                log.info("weather.fetch.retry", attempt=attempt, wait=wait)
+                time.sleep(wait)
+                continue
+            raise
+    if data is None:
+        raise RuntimeError("Open-Meteo archive unreachable after retries")
 
     hourly = data.get("hourly", {})
     times = hourly.get("time", [])

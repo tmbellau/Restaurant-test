@@ -42,9 +42,9 @@ FEATURE_CHANNELS: dict[str, FeatureChannel] = {
             "OGLv2 licence, no API key needed."
         ),
         notes=(
-            "Proxy for restaurant demand: cycling activity in Soho captures "
-            "the same weather/holiday/event sensitivities that drive walk-in "
-            "restaurant demand. When real Wagamama POS arrives, swap in."
+            "Target: daily trip count at Soho-area stations. Real, free, "
+            "weather-sensitive, actively published. When richer target data "
+            "(footfall / POS) arrives, swap in — the pipeline is target-agnostic."
         ),
     ),
     "weather": FeatureChannel(
