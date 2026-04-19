@@ -178,8 +178,10 @@ st.header("Try it: pick any week in 2025")
 st.markdown(
     "Choose an **origin date** and see the model forecast the next 7 days, "
     "with an 80% prediction interval. Actuals are overlaid so you can see "
-    "exactly how the forecast held up. Intervals widen at longer horizons "
-    "because the model is genuinely less certain further out."
+    "exactly how the forecast held up. On average across the year, intervals "
+    "are modestly wider at longer horizons (see next section) — but per-day "
+    "width varies with the specific feature combination, so you'll often see "
+    "non-monotonic widths within a single week."
 )
 
 daily, idx, actuals = load_daily()
@@ -480,10 +482,16 @@ percentile of demand given the 49 input features. Each is an ensemble of ~500 tr
 training minimises pinball loss (asymmetric, targets the specified percentile).
 
 **The prediction intervals.** The raw quantile predictions are widened by a per-horizon
-conformal buffer computed from a fully held-out year (2024). For each horizon, we compute
-exactly how much the raw interval needs to widen to cover 80% of actuals — no hand-tuned
-multiplier, just observed residual quantiles. Longer horizons get a larger buffer (±99 at
-1 day ahead, ±125 at 7 days ahead) because errors grow with horizon.
+conformal buffer computed from a fully held-out year (2024). For each horizon, we take
+the exact residual quantile needed to cover 80% of actuals — no hand-tuned multiplier.
+On average this produces larger buffers at longer horizons (±99 at 1 day ahead growing
+to ±125 at 7 days ahead), which is why average interval widths grow 629 → 698 trips
+across horizons on the 2025 holdout.
+
+*Honest caveat*: the raw quantile models themselves don't reliably produce wider intervals
+at longer horizons — they react to feature combinations, not horizon. So the widening is
+real **on average** but on any given week the width is dominated by per-day feature
+variation. This is the best honest calibration I could produce without hand-tuning.
 """
 )
 
@@ -511,6 +519,12 @@ st.markdown(
 - **Data publication lag.** TfL publishes Santander CSVs ~1-2 months after the fact, so
   live "next-day" predictions in production would be limited by data freshness, not model
   accuracy.
+- **Uncertainty widening is coarse.** The intervals are wider at longer horizons **on
+  average across the year** because of a per-horizon calibration buffer — but for any
+  single forecast, the width is feature-dependent and may not grow monotonically with
+  horizon. The model itself doesn't produce "I'm less confident about next Tuesday than
+  about tomorrow" out of the box; that's added via calibration. A proper horizon-aware
+  model would train quantiles per-horizon directly.
 """
 )
 
