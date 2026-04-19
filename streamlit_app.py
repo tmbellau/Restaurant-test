@@ -182,200 +182,293 @@ with st.sidebar:
                "(ex-COVID), evaluated on 2025.")
 
 
+def run_convergence(target_date: date) -> pd.DataFrame:
+    """Predict ONE target date from 7 different origins (h=7d back to h=1d).
+
+    Shows how the prediction converges on the actual as fresh data arrives.
+    """
+    daily, idx, actuals = load_daily()
+    models, features, buffers = load_models()
+    if target_date not in idx:
+        return pd.DataFrame()
+    rows = []
+    for h in range(7, 0, -1):
+        origin = target_date - timedelta(days=h)
+        if origin not in actuals:
+            continue
+        row = daily.iloc[idx[target_date]].copy()
+        row = recompute_lags(row, target_date, origin, actuals)
+        q = predict_one(models, features, row, horizon=h, buffers=buffers)
+        rows.append({
+            "origin": origin,
+            "horizon": h,
+            "origin_dow": origin.strftime("%a"),
+            "lower": q["lower"],
+            "predicted": q["predicted"],
+            "upper": q["upper"],
+            "interval_width": q["upper"] - q["lower"],
+            "horizon_buffer": q["horizon_buffer"],
+        })
+    df = pd.DataFrame(rows)
+    return df
+
+
 # ----- Main -----
-st.title("🎯 7-day demand forecast")
-st.markdown(
-    "Pick an **origin date** and the model will forecast the next 7 days with "
-    "an **80% prediction interval**. Where actuals are available (2025), we "
-    "overlay them so you can see how the forecast held up."
-)
+st.title("🎯 Demand forecast")
 
 _, idx, actuals = load_daily()
 min_date = min(actuals.keys())
 max_date = max(actuals.keys())
 
-col1, col2, col3 = st.columns([2, 2, 3])
+tab_forecast, tab_convergence = st.tabs([
+    "📅 7-day forecast from an origin",
+    "🔍 Convergence: how a prediction improves",
+])
 
-with col1:
-    origin = st.date_input(
-        "Origin date (the last known actual)",
-        value=date(2025, 6, 15),
-        min_value=date(2017, 2, 1),
-        max_value=max_date,
-        help="The model predicts the 7 days AFTER this date using only data from this date and earlier.",
+
+# ===================================================================
+# TAB 1: 7-day forecast from a single origin (existing functionality)
+# ===================================================================
+with tab_forecast:
+    st.markdown(
+        "Pick an **origin date** and the model forecasts the next 7 days. "
+        "Intervals widen at longer horizons because the model is less certain."
     )
 
-with col2:
-    days = st.slider("Forecast horizon (days)", 1, 7, 7)
-
-with col3:
-    st.markdown("**Origin context**")
-    if origin in actuals:
-        origin_actual = actuals[origin]
-        origin_dow = origin.strftime("%A")
-        st.metric(
-            label=f"{origin_dow} {origin.isoformat()}",
-            value=f"{origin_actual:.0f} trips",
+    col1, col2, col3 = st.columns([2, 2, 3])
+    with col1:
+        origin = st.date_input(
+            "Origin date (the last known actual)",
+            value=date(2025, 6, 15),
+            min_value=date(2017, 2, 1),
+            max_value=max_date,
+            help="The model predicts the 7 days AFTER this date.",
+            key="origin_tab1",
         )
+    with col2:
+        days = st.slider("Forecast horizon (days)", 1, 7, 7, key="days_tab1")
+    with col3:
+        st.markdown("**Origin context**")
+        if origin in actuals:
+            st.metric(
+                label=f"{origin.strftime('%A')} {origin.isoformat()}",
+                value=f"{actuals[origin]:.0f} trips",
+            )
+        else:
+            st.info(f"{origin}: no actual available")
+
+    df = run_forecast(origin, days)
+
+    if df.empty:
+        st.warning("No forecast could be built — check that the origin date is within the data range.")
     else:
-        st.info(f"{origin}: no actual available")
+        # Chart
+        fig = go.Figure()
+        hist_dates = [origin - timedelta(days=k) for k in range(14, -1, -1)]
+        hist_actuals = [actuals.get(d, None) for d in hist_dates]
+        fig.add_trace(go.Scatter(
+            x=hist_dates, y=hist_actuals,
+            mode="lines+markers", name="Past actuals",
+            line=dict(color="#888", width=2), marker=dict(size=6),
+            hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f}<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=list(df["target"]) + list(df["target"])[::-1],
+            y=list(df["upper"]) + list(df["lower"])[::-1],
+            fill="toself", fillcolor="rgba(31,119,180,0.15)",
+            line=dict(color="rgba(31,119,180,0)"),
+            name="80% interval", hoverinfo="skip",
+        ))
+        fig.add_trace(go.Scatter(
+            x=df["target"], y=df["predicted"],
+            mode="lines+markers", name="Forecast",
+            line=dict(color="#1f77b4", width=3), marker=dict(size=10),
+            customdata=list(zip(df["lower"].round(0), df["upper"].round(0), df["horizon"])),
+            hovertemplate=(
+                "<b>%{x|%a %b %d}</b> (h=%{customdata[2]}d)<br>"
+                "Forecast: %{y:.0f}<br>"
+                "Interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
+            ),
+        ))
+        if df["actual"].notna().any():
+            known = df[df["actual"].notna()]
+            in_iv = (known["actual"] >= known["lower"]) & (known["actual"] <= known["upper"])
+            colors = ["#2ca02c" if b else "#d62728" for b in in_iv]
+            fig.add_trace(go.Scatter(
+                x=known["target"], y=known["actual"],
+                mode="markers", name="Actual",
+                marker=dict(size=14, color=colors, symbol="diamond",
+                            line=dict(color="white", width=1.5)),
+                hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f}<extra></extra>",
+            ))
+        fig.add_vline(x=origin, line_width=1.5, line_dash="dot", line_color="#555")
+        fig.add_annotation(x=origin, y=1.02, yref="paper", text="origin",
+                           showarrow=False, font=dict(size=11, color="#555"))
+        fig.update_layout(
+            height=460, hovermode="x unified",
+            xaxis_title=None, yaxis_title="Daily trips at Soho stations",
+            margin=dict(l=0, r=0, t=40, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
+        st.plotly_chart(fig, width="stretch")
+
+        # Table
+        def _fmt(x): return f"{x:.0f}" if pd.notna(x) else "—"
+        def _flags(r):
+            fl = []
+            if r["is_bank_holiday"]: fl.append("🏖 hol")
+            if r["is_tube_strike"]: fl.append("🚇 strike")
+            if r["is_cultural_period"]: fl.append("🎉 event")
+            return ", ".join(fl)
+        display = pd.DataFrame({
+            "Date": df["target"].dt.strftime("%a %Y-%m-%d"),
+            "h": df["horizon"].apply(lambda h: f"{h}d"),
+            "Lower": df["lower"].apply(_fmt),
+            "Forecast": df["predicted"].apply(_fmt),
+            "Upper": df["upper"].apply(_fmt),
+            "Width": df["interval_width"].apply(_fmt),
+            "Actual": df["actual"].apply(_fmt),
+            "Flags": df.apply(_flags, axis=1),
+        })
+        st.dataframe(display, width="stretch", hide_index=True)
+
+        # KPIs
+        if df["actual"].notna().any():
+            kn = df.dropna(subset=["actual"])
+            in_flags = (kn["actual"] >= kn["lower"]) & (kn["actual"] <= kn["upper"])
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Coverage", f"{int(in_flags.sum())}/{len(kn)} days in interval")
+            c2.metric("MAE", f"{(kn['predicted'] - kn['actual']).abs().mean():.0f} trips")
+            c3.metric("WAPE", f"{(kn['predicted'] - kn['actual']).abs().sum() / max(kn['actual'].abs().sum(), 1e-8):.1%}")
 
 
-# Run forecast
-df = run_forecast(origin, days)
+# ===================================================================
+# TAB 2: Convergence — pick a target, see prediction improving
+# ===================================================================
+with tab_convergence:
+    st.markdown(
+        "Pick a **target date** and see how the model's prediction for that "
+        "day **improves as the forecast horizon shrinks** — from 7 days out "
+        "(earliest, least accurate) to 1 day out (latest, most accurate). "
+        "Each row is an independent forecast made from a different origin date."
+    )
 
-if df.empty:
-    st.warning("No forecast could be built — check that the origin date is within the data range.")
-    st.stop()
+    col1, col2 = st.columns([2, 3])
+    with col1:
+        target_date = st.date_input(
+            "Target date to predict",
+            value=date(2025, 6, 20),
+            min_value=date(2017, 2, 8),
+            max_value=max_date,
+            help="The model predicts THIS date from 7 different starting points.",
+            key="target_tab2",
+        )
+    with col2:
+        actual_val = actuals.get(target_date, None)
+        if actual_val is not None:
+            st.metric(
+                label=f"Actual for {target_date.strftime('%A')} {target_date.isoformat()}",
+                value=f"{actual_val:.0f} trips",
+            )
+        else:
+            st.info(f"No actual available for {target_date}")
 
-# ----- Main chart -----
-fig = go.Figure()
+    conv_df = run_convergence(target_date)
+    if conv_df.empty:
+        st.warning("No convergence data — target date may be outside the data range.")
+    else:
+        # Convergence chart
+        fig = go.Figure()
 
-# Context: 14 days of history before the origin
-hist_dates = [origin - timedelta(days=k) for k in range(14, -1, -1)]
-hist_actuals = [actuals.get(d, None) for d in hist_dates]
-fig.add_trace(go.Scatter(
-    x=hist_dates, y=hist_actuals,
-    mode="lines+markers",
-    name="Past actuals",
-    line=dict(color="#888", width=2),
-    marker=dict(size=6),
-    hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f} trips<extra></extra>",
-))
+        # 80% interval band (per-horizon — should visibly narrow)
+        fig.add_trace(go.Scatter(
+            x=list(conv_df["horizon"]) + list(conv_df["horizon"])[::-1],
+            y=list(conv_df["upper"]) + list(conv_df["lower"])[::-1],
+            fill="toself", fillcolor="rgba(31,119,180,0.15)",
+            line=dict(color="rgba(31,119,180,0)"),
+            name="80% interval", hoverinfo="skip",
+        ))
 
-# 80% interval (shaded band)
-fig.add_trace(go.Scatter(
-    x=list(df["target"]) + list(df["target"])[::-1],
-    y=list(df["upper"]) + list(df["lower"])[::-1],
-    fill="toself",
-    fillcolor="rgba(31,119,180,0.15)",
-    line=dict(color="rgba(31,119,180,0)"),
-    name="80% interval",
-    hoverinfo="skip",
-    showlegend=True,
-))
+        # Predictions line
+        fig.add_trace(go.Scatter(
+            x=conv_df["horizon"], y=conv_df["predicted"],
+            mode="lines+markers", name="Prediction",
+            line=dict(color="#1f77b4", width=3), marker=dict(size=12),
+            customdata=list(zip(
+                conv_df["lower"].round(0), conv_df["upper"].round(0),
+                conv_df["origin"].apply(lambda d: d.strftime("%a %b %d")),
+                conv_df["interval_width"].round(0),
+            )),
+            hovertemplate=(
+                "<b>%{customdata[2]}</b> (h=%{x}d)<br>"
+                "Prediction: %{y:.0f}<br>"
+                "Interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}] "
+                "(width %{customdata[3]:.0f})<extra></extra>"
+            ),
+        ))
 
-# Point forecast
-fig.add_trace(go.Scatter(
-    x=df["target"], y=df["predicted"],
-    mode="lines+markers",
-    name="Forecast",
-    line=dict(color="#1f77b4", width=3),
-    marker=dict(size=10, symbol="circle"),
-    customdata=np.stack([df["lower"], df["upper"]], axis=-1),
-    hovertemplate=(
-        "<b>%{x|%a %b %d}</b><br>"
-        "Forecast: %{y:.0f}<br>"
-        "Interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
-    ),
-))
+        # Actual horizontal line
+        if actual_val is not None:
+            fig.add_hline(
+                y=actual_val, line_dash="dash", line_color="#2ca02c", line_width=2,
+                annotation_text=f"Actual: {actual_val:.0f}",
+                annotation_position="top right",
+                annotation_font=dict(color="#2ca02c", size=13),
+            )
 
-# Actuals (where available)
-if df["actual"].notna().any():
-    known = df[df["actual"].notna()]
-    in_interval = (known["actual"] >= known["lower"]) & (known["actual"] <= known["upper"])
-    colors = ["#2ca02c" if b else "#d62728" for b in in_interval]
-    fig.add_trace(go.Scatter(
-        x=known["target"], y=known["actual"],
-        mode="markers",
-        name="Actual",
-        marker=dict(size=14, color=colors, symbol="diamond",
-                    line=dict(color="white", width=1.5)),
-        hovertemplate=(
-            "<b>%{x|%a %b %d}</b><br>"
-            "Actual: %{y:.0f} trips<extra></extra>"
-        ),
-    ))
+        fig.update_layout(
+            height=460,
+            xaxis=dict(
+                title="Days before target (7 = earliest forecast, 1 = most recent)",
+                tickvals=list(range(1, 8)),
+                ticktext=[f"{h}d out" for h in range(1, 8)],
+                autorange="reversed",
+            ),
+            yaxis_title="Predicted daily trips",
+            margin=dict(l=0, r=0, t=40, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
+        fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
+        st.plotly_chart(fig, width="stretch")
 
-# Vertical line marking origin
-fig.add_vline(x=origin, line_width=1.5, line_dash="dot", line_color="#555")
-fig.add_annotation(
-    x=origin, y=1.02, yref="paper",
-    text="origin", showarrow=False, font=dict(size=11, color="#555"),
-)
+        # Detail table
+        ct = pd.DataFrame({
+            "Origin": conv_df["origin"].apply(lambda d: d.strftime("%a %Y-%m-%d")),
+            "Horizon": conv_df["horizon"].apply(lambda h: f"{h} day{'s' if h > 1 else ''} out"),
+            "Lower": conv_df["lower"].apply(lambda x: f"{x:.0f}"),
+            "Prediction": conv_df["predicted"].apply(lambda x: f"{x:.0f}"),
+            "Upper": conv_df["upper"].apply(lambda x: f"{x:.0f}"),
+            "Width": conv_df["interval_width"].apply(lambda x: f"{x:.0f}"),
+        })
+        if actual_val is not None:
+            ct["Actual"] = f"{actual_val:.0f}"
+            ct["Error"] = conv_df["predicted"].apply(lambda p: f"{p - actual_val:+.0f}")
+        st.dataframe(ct, width="stretch", hide_index=True)
 
-fig.update_layout(
-    height=460,
-    hovermode="x unified",
-    xaxis_title=None,
-    yaxis_title="Daily trips at Soho stations",
-    margin=dict(l=0, r=0, t=40, b=0),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-)
-fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
-fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
-
-st.plotly_chart(fig, width="stretch")
-
-
-# ----- Table -----
-st.subheader("Forecast details")
-
-def _fmt_int(x):
-    return f"{x:.0f}" if pd.notna(x) else "—"
-
-
-def _flags(row):
-    fl = []
-    if row["is_bank_holiday"]: fl.append("🏖 bank holiday")
-    if row["is_tube_strike"]: fl.append("🚇 tube strike")
-    if row["is_cultural_period"]: fl.append("🎉 cultural event")
-    return ", ".join(fl)
-
-
-display = pd.DataFrame({
-    "Date": df["target"].dt.strftime("%a %Y-%m-%d"),
-    "Horizon": df["horizon"].apply(lambda h: f"{h}d"),
-    "Lower (10%)": df["lower"].apply(_fmt_int),
-    "Forecast": df["predicted"].apply(_fmt_int),
-    "Upper (90%)": df["upper"].apply(_fmt_int),
-    "Actual": df["actual"].apply(_fmt_int),
-    "°C": df["temp_mean_c"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "—"),
-    "Rain mm": df["precipitation_total_mm"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "—"),
-    "Wind km/h": df["wind_speed_mean_kmh"].apply(lambda x: f"{x:.0f}" if pd.notna(x) else "—"),
-    "Flags": df.apply(_flags, axis=1),
-})
-
-# Highlight in-interval / out-of-interval
-def _highlight(row):
-    actual_s = row["Actual"]
-    if actual_s == "—":
-        return [""] * len(row)
-    actual = float(actual_s)
-    lo = float(row["Lower (10%)"])
-    hi = float(row["Upper (90%)"])
-    color = "background-color: rgba(44,160,44,0.12)" if lo <= actual <= hi else "background-color: rgba(214,39,40,0.12)"
-    return [color] * len(row)
-
-
-st.dataframe(display.style.apply(_highlight, axis=1), width="stretch", hide_index=True)
-
-
-# ----- KPIs -----
-if df["actual"].notna().any():
-    known = df.dropna(subset=["actual"])
-    in_interval_flags = (known["actual"] >= known["lower"]) & (known["actual"] <= known["upper"])
-    in_int = in_interval_flags.mean()
-    n_in = int(in_interval_flags.sum())
-    mae = (known["predicted"] - known["actual"]).abs().mean()
-    wape = (known["predicted"] - known["actual"]).abs().sum() / max(known["actual"].abs().sum(), 1e-8)
-
-    st.subheader("How this forecast performed")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Days in interval", f"{n_in}/{len(known)}", f"{in_int:.0%} coverage")
-    c2.metric("MAE", f"{mae:.0f} trips/day")
-    c3.metric("WAPE", f"{wape:.1%}")
-    mean_actual = known["actual"].mean()
-    c4.metric("Avg actual", f"{mean_actual:.0f} trips/day")
+        if actual_val is not None:
+            errors = (conv_df["predicted"] - actual_val).abs()
+            st.caption(
+                f"Prediction error shrinks from **{errors.iloc[0]:.0f}** trips "
+                f"(7d out) to **{errors.iloc[-1]:.0f}** trips (1d out) — "
+                f"a {(1 - errors.iloc[-1]/max(errors.iloc[0], 1)):.0%} improvement."
+            )
 
 
 st.markdown("---")
 with st.expander("💡 How to read this"):
     st.markdown("""
-- **Grey line (left)** = the 2 weeks of actuals before your origin date — the context the model sees when it predicts.
-- **Blue solid line** = the point forecast (50th percentile).
-- **Blue shaded band** = the 80% prediction interval. We expect actuals to fall inside this band 80% of the time.
-- **Green diamonds** = actual values that fell inside the interval.
-- **Red diamonds** = actual values that fell outside — days the model got surprised.
-- The interval is built from three separate LightGBM models (5th, 50th, 95th percentile) with a conformal-calibration buffer added so empirical coverage matches the 80% target.
+**7-day forecast tab:**
+- **Grey line** = 2 weeks of past actuals — the context the model sees.
+- **Blue line** = the point forecast (50th percentile).
+- **Blue band** = the 80% prediction interval, **wider at longer horizons** because the model is less confident about further-out days.
+- **Green / red diamonds** = actual values inside / outside the interval.
+
+**Convergence tab:**
+- Shows a **single target date** predicted 7 times — from 7 days out (most uncertain) down to 1 day out (most certain).
+- **Green dashed line** = the actual value.
+- Watch the blue prediction line **converge** toward the actual as the horizon shrinks.
+- The **interval narrows** as the forecast gets closer — less uncertainty, more data.
 """)
