@@ -565,9 +565,15 @@ Produce a CONCISE, BULLET-POINT explanation using exactly these three markdown s
   - State whether the MISS DIRECTION (over or under) aligns with any feature value in the
     data (e.g., "the model predicted high because temperature was 18°C; actual was lower,
     which is unexplained by visible features").
-  - If no visible feature in the data explains the miss, say exactly that: "No feature in
-    the provided data explains this miss. The model's inputs gave no signal; the deviation
-    is attributable to factors outside the feature set."
+  - If no visible feature in the data explains the miss, state that clearly in ONE
+    sentence, then add ONE sentence naming the most likely *category* of unseen factor
+    based on the time of year, day of week, and magnitude of the miss. Examples:
+    "No feature in the provided data explains this 400-trip underprediction on a Friday
+    evening — most likely a local event or entertainment draw not in the model's calendar."
+    Or: "The 300-trip overprediction on this wet Monday is unexplained by the visible
+    features — possibly an untracked transport disruption that reduced cycling."
+    Keep it to two sentences max. Do NOT invent specific events (no "likely a concert
+    at the O2", no "strike rumours") — name the category only.
 - DO NOT invent unobserved causes like "possible strike rumours", "reported tube delays",
   "event in the area", or weather forecasts differing from actuals — the data shows the
   real weather and the real strike flag. If you cannot tie the miss to a number in the
@@ -865,8 +871,8 @@ st.markdown(
 |---|---|---|
 | **Live TfL disruption feed** | Tube disruptions push people to bikes (or deter travel entirely). The September 2025 week-long RMT strike caused a 2× surge we missed. | No free historical archive of unplanned disruptions. Our static strike list captures major actions only. |
 | **Hyperlocal events** | Film premieres, Chinese New Year, protest marches, fashion week pop-ups all affect Soho foot traffic. | No structured historical event data for this level of granularity. Would require ongoing manual curation or an events API. |
-| **Santander fleet size / pricing** | TfL's e-bike fleet grew ~30% between 2024-2025, causing a structural demand uplift the model didn't anticipate. | TfL doesn't publish historical fleet-size or pricing data. |
-| **Real-time weather forecast** | We use Open-Meteo's actual weather in the demo; in production, forecast error would add noise at longer horizons. | Available via Open-Meteo Forecast API but not integrated into the live demo. |
+| **Santander fleet size / pricing** | TfL's e-bike fleet grew significantly between 2024-2025, causing a structural demand uplift the model didn't anticipate. | TfL announces changes in press releases but doesn't publish a machine-readable time series of fleet size or pricing by date — so we can't use it as a training feature. |
+| **Real-time weather forecast** | The demo uses actual historical weather (perfect hindsight). In production, multi-day weather forecasts degrade past day 3-4 — the model would inherit that forecast error. | The API exists (Open-Meteo Forecast) and a client is built (`src/data/weather_forecast.py`), but the demo evaluates on 2025 using archive weather for a fair like-for-like comparison with training. |
 | **Social / viral events** | A TikTok trend or cycling campaign could temporarily spike demand. | No structured data source exists. |
 | **Competitor transport changes** | Lime / Uber bike availability, e-scooter regulation changes affect Santander usage. | No historical archive. |
 """
