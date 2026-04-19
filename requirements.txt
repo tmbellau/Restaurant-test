@@ -8,3 +8,4 @@ pyarrow>=14.0
 structlog>=23.1
 httpx>=0.25
 astral>=3.2
+anthropic>=0.40

@@ -159,14 +159,14 @@ overall_wape = eval_ok["abs_err"].sum() / eval_ok["actual"].abs().sum()
 h1_wape = (h1["predicted"] - h1["actual"]).abs().sum() / h1["actual"].abs().sum()
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Next-day accuracy (WAPE)", f"{h1_wape:.1%}",
-          help="Average % error predicting tomorrow from today's known data.")
+c1.metric("1-day-ahead WAPE", f"{h1_wape:.1%}",
+          help="Weighted average % error predicting tomorrow. Computed on 1-day-ahead predictions only (the most accurate horizon).")
 c2.metric("80% interval coverage", f"{overall_cov:.0%}",
-          help="Actuals fall inside the prediction interval 80% of the time — as designed.")
-c3.metric("Training days (real data)", "2,264",
-          help="2017-2024 excluding 2020-2021 COVID.")
-c4.metric("Holdout year (unseen)", "2025",
-          help="All metrics on this page come from 2025 data the model has never seen.")
+          help="Actuals fall inside the prediction interval this often — target is 80%, achieved via conformal calibration.")
+c3.metric("Training data", "6 years (2017-2024)",
+          help="Excluding 2020-2021 COVID. 2,264 training days of real Santander trip data.")
+c4.metric("Holdout (unseen)", "All of 2025",
+          help="Every metric on this page comes from 2025 data the model never saw during training.")
 
 st.divider()
 
@@ -280,27 +280,6 @@ with col2:
 
 # Forecast table + summary underneath
 if not df.empty:
-    st.markdown("#### Forecast details")
-    def _fmt(x): return f"{x:.0f}" if pd.notna(x) else "—"
-    def _flags(r):
-        fl = []
-        if r["is_bank_holiday"]: fl.append("🏖 bank holiday")
-        if r["is_tube_strike"]: fl.append("🚇 tube strike")
-        return ", ".join(fl)
-    display = pd.DataFrame({
-        "Date": df["target"].dt.strftime("%a %Y-%m-%d"),
-        "Ahead": df["horizon"].apply(lambda h: f"{h} day{'s' if h > 1 else ''}"),
-        "Lower": df["lower"].apply(_fmt),
-        "Forecast": df["predicted"].apply(_fmt),
-        "Upper": df["upper"].apply(_fmt),
-        "Width": (df["upper"] - df["lower"]).apply(_fmt),
-        "Actual": df["actual"].apply(_fmt),
-        "°C": df["temp_mean_c"].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "—"),
-        "Rain": df["precipitation_total_mm"].apply(lambda x: f"{x:.1f}mm" if pd.notna(x) else "—"),
-        "Notes": df.apply(_flags, axis=1),
-    })
-    st.dataframe(display, width="stretch", hide_index=True)
-
     if df["actual"].notna().any():
         kn = df.dropna(subset=["actual"])
         in_iv = (kn["actual"] >= kn["lower"]) & (kn["actual"] <= kn["upper"])
@@ -310,6 +289,77 @@ if not df.empty:
         c1.metric("This week's coverage", f"{int(in_iv.sum())}/{len(kn)} days inside interval")
         c2.metric("This week's MAE", f"{mae:.0f} trips/day")
         c3.metric("This week's WAPE", f"{wape:.1%}")
+
+    # ----- AI Explanation Button -----
+    st.markdown("#### Understand this forecast")
+    if st.button("🤖 Explain why the model predicted this", type="primary"):
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+        if not api_key:
+            api_key = st.session_state.get("_anthropic_key", "")
+        if not api_key:
+            st.warning("No API key found. Add ANTHROPIC_API_KEY to Streamlit secrets or enter below.")
+            api_key = st.text_input("Anthropic API key", type="password", key="_key_input")
+            if api_key:
+                st.session_state["_anthropic_key"] = api_key
+
+        if api_key:
+            import anthropic
+
+            # Build context for Claude
+            week_data = []
+            for _, r in df.iterrows():
+                day_info = {
+                    "date": r["target"].strftime("%A %Y-%m-%d"),
+                    "horizon_days_ahead": int(r["horizon"]),
+                    "predicted_trips": round(float(r["predicted"])),
+                    "lower_80pct": round(float(r["lower"])),
+                    "upper_80pct": round(float(r["upper"])),
+                    "actual_trips": round(float(r["actual"])) if pd.notna(r["actual"]) else "unknown",
+                    "temperature_c": round(float(r["temp_mean_c"]), 1) if pd.notna(r["temp_mean_c"]) else None,
+                    "rainfall_mm": round(float(r["precipitation_total_mm"]), 1) if pd.notna(r["precipitation_total_mm"]) else None,
+                    "bank_holiday": bool(r["is_bank_holiday"]),
+                    "tube_strike": bool(r["is_tube_strike"]),
+                }
+                week_data.append(day_info)
+
+            origin_actual = actuals.get(origin, 0)
+            prompt = f"""You are analysing predictions from a cycling demand forecasting model.
+The model predicts daily Santander Cycles trip counts at Soho docking stations in London.
+
+The forecast origin is {origin.strftime('%A %Y-%m-%d')} with {origin_actual:.0f} actual trips that day.
+
+Here are the predictions for the next {len(week_data)} days:
+
+{json.dumps(week_data, indent=2)}
+
+The model uses these key inputs: weather (temperature, rain, wind), UK bank holidays,
+school holidays, London cultural events, daylight hours, tube strike flags, and
+historical demand lags (1d, 7d, 14d, 28d, 365d rolling averages).
+
+The top features by importance are: temperature change (day-over-day), wind speed,
+minimum temperature, temperature anomaly vs 30-day average, 28-day rolling mean,
+holiday proximity, and precipitation.
+
+Write a clear 3-4 paragraph explanation for a non-technical reader covering:
+1. What the model predicted and how it compares to what actually happened
+2. What likely drove the prediction levels (which inputs mattered most this week)
+3. Where it got things right and where it missed, with specific reasons
+4. Any notable patterns (weekend dips, weather effects, holiday effects)
+
+Be specific about the numbers. Use plain language. Don't hedge excessively."""
+
+            with st.spinner("Generating explanation..."):
+                try:
+                    client = anthropic.Anthropic(api_key=api_key)
+                    response = client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=800,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    explanation = response.content[0].text
+                    st.markdown(explanation)
+                except Exception as e:
+                    st.error(f"API error: {e}")
 
 st.divider()
 
@@ -396,9 +446,26 @@ fig.update_layout(
 )
 fig.update_yaxes(range=[0, max(m_stats["wape"] * 100) * 1.3])
 st.plotly_chart(fig, width="stretch")
-st.caption(
-    "Summer months (Apr-Oct) have higher trip volumes and more predictable patterns — WAPE 7-13%. "
-    "Winter months are noisier and weather-volatile — WAPE 14-21%."
+st.markdown(
+    """
+**Why is winter (especially January) so much less accurate?**
+
+Three compounding factors:
+
+1. **Lower volume amplifies percentage error.** January averages ~680 trips/day vs ~1,800 in June.
+   A 100-trip miss is 15% error in January but only 6% in June — same absolute error, worse WAPE.
+
+2. **Weather is more volatile.** Rain, wind, and cold suppress cycling demand sharply but
+   unpredictably. One unexpectedly mild January day can produce 2× the trips of the day before.
+   Summer weather is more stable.
+
+3. **Fewer training examples of extreme cold.** The model has 6 years of data but London rarely
+   gets sustained sub-zero weather, so the training set doesn't cover enough extreme-cold
+   scenarios for the model to learn precise responses.
+
+All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
+on **1-day-ahead** predictions only (the most accurate horizon).
+"""
 )
 
 st.divider()
