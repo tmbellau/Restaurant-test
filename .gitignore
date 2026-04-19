@@ -40,9 +40,7 @@ data/models/*
 !data/models/lgbm_daily_q95.pkl
 !data/models/quantile_feature_names.json
 !data/models/quantile_metrics.json
-!data/models/daily_feature_names.json
 !data/models/daily_training_metrics.json
-!data/models/lgbm_daily.pkl
 .DS_Store
 *.swp
 node_modules/
