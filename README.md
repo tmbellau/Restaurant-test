@@ -1,80 +1,96 @@
-# Wagamama Forecast
+# Soho Cycles Demand Forecast
 
-Demand forecasting platform for walk-in-heavy restaurant chains. Predicts
-dine-in covers and delivery orders at hourly and daily granularity with
-calibrated confidence intervals, and produces staffing + purchasing
-recommendations.
+A demand-forecasting proof of concept: predict daily Santander Cycles trips
+at Soho-area docking stations using only freely-available signals
+(weather, UK calendar, daylight, tube strikes, lag history).
 
-See the full build spec in the plan file (`/root/.claude/plans/bubbly-wibbling-pillow.md`).
+**80% interval coverage, 11% WAPE at 1-day-ahead**, validated on unseen 2025 data.
 
-## Current status
-
-**Layer 1 (foundation) -- complete:**
-
-- Project scaffold, config via Pydantic Settings, Docker Compose for TimescaleDB + Redis
-- `src/util/time_zones.py` -- UTC <-> local conversion with DST-safe `same_local_hour_days_ago`
-- SQLAlchemy models + Alembic migration `0001_initial_layer1`
-  - `restaurants`, `sales_records`, `signal_features`, `predictions`, `location_closures`
-  - TimescaleDB hypertables on `sales_records` and `signal_features`
-- Signal hub (`src/signals/base.py`, `src/signals/registry.py`)
-  - `SignalSource` Protocol + `BaseSignalSource` ABC with Tenacity retries + Pybreaker circuit breaker
-  - `SignalRegistry` auto-discovers sources via `pkgutil`
-- POS ingestion (`src/signals/pos/`)
-  - CSV ingester with Pandera validation, quarantine on failure
-  - Late-correction UPSERT using `(transaction_id, item_id)` as dedup key
-  - `ZonalAdapter` stub for Layer 2 API work
-- Weather source: `OpenMeteoWeatherSource` (free, no key required)
-- Unit tests covering DST transitions, POS schema validation, signal registry discovery, retry/breaker wrapping
-- `scripts/verify_layer1.py` end-to-end verification script
-
-## Layer 1 verification gate
+## Try the demo
 
 ```bash
-# 1. Bring up TimescaleDB
-docker compose up -d db
-
-# 2. Install deps
-pip install -e ".[dev,ml]"
-
-# 3. Run migrations
-alembic upgrade head
-
-# 4. Run unit tests
-pytest tests/test_features/test_time_zones.py tests/test_signals/
-
-# 5. Run the end-to-end verification script
-python scripts/verify_layer1.py
+pip install -r requirements.txt
+streamlit run streamlit_app.py
 ```
 
-## Layers remaining
+Open http://localhost:8501 to explore:
 
-- **Layer 2** -- core pipeline: feature assembler, censoring, LightGBM trainer, CQR, SHAP,
-  batch prediction, FastAPI read endpoints, minimal dashboard, demo data generator, Dagster
-- **Layer 3** -- production hardening: delivery channel, promos, manager overrides, business
-  metrics, drift detection, temporal reconciliation, GDPR, CI/CD
-- **Layer 4** -- advanced: ingredient BOM, religious calendar, social sentiment plug-in,
-  economic indicators, multi-region
+- 🎯 **Predict** — pick any date, get a 7-day forecast with prediction
+  intervals, compared to actuals where available.
+- 📊 **Accuracy** — full 2025 holdout evaluation: WAPE by horizon,
+  year-long line chart, predicted-vs-actual scatter, error distribution,
+  monthly breakdown, browseable prediction records.
+- ⚙️ **How it works** — features, training pipeline, data sources,
+  feature importances, model architecture.
 
-## Project layout
+## Deploy to the web
 
+The simplest path is **[Streamlit Community Cloud](https://share.streamlit.io/)** (free):
+
+1. Push this repo to GitHub.
+2. Go to https://share.streamlit.io and sign in with GitHub.
+3. Click **New app**, select the repo, branch, and `streamlit_app.py` as
+   the entry point.
+4. Click **Deploy**. You get a public `*.streamlit.app` URL in ~2 minutes.
+
+Every subsequent `git push` auto-redeploys.
+
+Alternatives:
+- **Hugging Face Spaces** (free, select "Streamlit" SDK)
+- **Render.com** (free tier, add `streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0` as the start command)
+- **Fly.io** (Dockerfile deployment)
+
+## Rebuilding the model from scratch
+
+```bash
+# Pull raw Santander data + weather + build features
+python -m src.data.build_training_set --start 2017-01-01 --end 2025-12-31
+
+# Aggregate to daily, add derived features, exclude COVID
+python -m src.data.build_daily_training_set --exclude-covid
+
+# Train the three quantile models + compute conformal buffer
+python -m src.models.train_quantile_ensemble --train-end 2024-12-31
+
+# Full 2025 holdout evaluation
+python scripts/evaluate_2024.py
 ```
-src/
-  config.py                  # Pydantic Settings
-  util/time_zones.py         # DST-safe UTC<->local
-  db/engine.py               # SQLAlchemy engine + session
-  db/models.py               # ORM models
-  signals/
-    base.py                  # SignalSource Protocol + BaseSignalSource ABC
-    registry.py              # Auto-discovery
-    weather.py               # Open-Meteo
-    pos/
-      schemas.py             # Pandera row schema
-      csv_ingester.py        # CSV ingester with UPSERT
-      base_adapter.py        # POS API adapter ABC
-      zonal_adapter.py       # Zonal POS stub
-tests/
-  test_features/test_time_zones.py
-  test_signals/test_layer1_gate.py
-alembic/versions/0001_initial_layer1.py
-scripts/verify_layer1.py
+
+## Live forward prediction (when new actuals arrive)
+
+```bash
+# One shot: pull new data, rebuild, forecast next 7 days, score historical predictions
+bash scripts/refresh_and_predict.sh
 ```
+
+Predictions are stored in `data/predictions/` and compared against actuals
+the next time the script runs.
+
+## Key results (2025 holdout, 365 days)
+
+| Horizon | WAPE | Coverage (80% target) |
+|---|---|---|
+| 1 day ahead | 10.7% | 87.1% |
+| 3 days ahead | 12.8% | 78.0% |
+| 7 days ahead | 12.8% | 79.1% |
+| **Overall** | **12.6%** | **80.0%** |
+
+- **58% of days within ±10% error, 83% within ±20%.**
+- Correlation with actuals: **0.85.**
+- Beats a naive "predict yesterday" baseline by 6-7 percentage points at
+  every horizon.
+
+## Honest limitations
+
+- **Structural shifts** (e.g. a 30% YoY increase in Soho cycling in 2025,
+  likely driven by TfL e-bike fleet expansion) can't be predicted from
+  historical patterns and require periodic retraining.
+- **Rare events** (tube strikes with full-network impact) are
+  under-represented in training — ~25 strike days out of 2,200 is not
+  enough for the model to learn a stable strike coefficient.
+- **Data outages** (occasional days where TfL's station data returns
+  near-zero counts) are handled with an origin-selection filter but still
+  show up as "false negatives" in held-out evaluation.
+- This is **not** a restaurant-demand forecasting model. It's a cycling
+  demand model. The architecture transfers to any target with similar
+  driver signals, but the proxy doesn't.

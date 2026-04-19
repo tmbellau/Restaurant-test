@@ -1,0 +1,14 @@
+{
+  "target_coverage": 0.8,
+  "conformal_buffer": 128.8017662434,
+  "raw_coverage_cv": 0.841108545034642,
+  "calibrated_coverage_cv": 0.841108545034642,
+  "median_mae_cv": 289.5247545975132,
+  "median_wape_cv": 0.2521047276104172,
+  "raw_interval_width": 1417.7664050039257,
+  "calibrated_interval_width": 1417.7664050039257,
+  "n_cv_samples": 2165,
+  "n_training_rows": 2259,
+  "n_features": 48,
+  "recalibrated_on": "2025 holdout"
+}
