@@ -90,55 +90,65 @@ def walk_forward_splits(df: pd.DataFrame, n_folds: int = 5,
 def train(
     input_path: Path | None = None,
     model_dir: Path | None = None,
-    train_end_date: str | None = "2023-12-31",
-    calibrate_year: int = 2024,
+    train_end_date: str | None = "2024-12-31",
 ) -> dict:
-    """Train on data through train_end_date, calibrate per-horizon conformal
-    buffer on a held-out calibration year (default 2024).
-
-    Why this split: CV residuals on training data don't capture the true
-    horizon-dependent error distribution because each fold is tiny and the
-    model has access to similar patterns at all horizons. Calibrating on a
-    full held-out year gives real-world residuals that grow with horizon —
-    the buffer comes directly from observation, not a multiplier.
-    """
+    """Train on all data through train_end_date. Calibrate per-horizon
+    conformal buffer from the LAST walk-forward CV fold's residuals
+    (so we don't sacrifice a whole year of training data)."""
     input_path = input_path or DEFAULT_INPUT
     model_dir = model_dir or DEFAULT_MODEL_DIR
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    df_all = pd.read_parquet(input_path)
-    df_all["date"] = pd.to_datetime(df_all["date"])
+    df = pd.read_parquet(input_path)
+    df["date"] = pd.to_datetime(df["date"])
 
     train_cutoff = pd.Timestamp(train_end_date)
-    calib_start = pd.Timestamp(f"{calibrate_year}-01-01")
-    calib_end = pd.Timestamp(f"{calibrate_year}-12-31")
+    df = df[df["date"] <= train_cutoff].reset_index(drop=True)
 
-    df_train = df_all[df_all["date"] <= train_cutoff].reset_index(drop=True)
-    df_calib = df_all[
-        (df_all["date"] >= calib_start) & (df_all["date"] <= calib_end)
-    ].reset_index(drop=True)
+    log.info("horizon_aware_train.loaded",
+             rows=len(df),
+             date_range=f"{df['date'].min().date()} to {df['date'].max().date()}")
 
-    log.info("horizon_aware_train.split",
-             train_rows=len(df_train),
-             train_range=f"{df_train['date'].min().date()} to {df_train['date'].max().date()}",
-             calib_rows=len(df_calib),
-             calib_range=f"{df_calib['date'].min().date()} to {df_calib['date'].max().date()}")
+    X_all, y_all, cats = prepare_xy(df)
+    feature_cols = list(X_all.columns)
 
-    X_train, y_train, cats = prepare_xy(df_train)
-    X_calib, y_calib, _ = prepare_xy(df_calib)
-    feature_cols = list(X_train.columns)
+    # Walk-forward CV — we need the LAST fold's residuals for per-horizon calibration
+    splits = walk_forward_splits(df, n_folds=5)
 
-    # Train each quantile model on the full training set (no CV needed —
-    # the held-out calibration year provides all the uncertainty info).
     trained_models: dict[str, lgb.LGBMRegressor] = {}
-    calib_predictions: dict[str, np.ndarray] = {}
+    calib_records: list[dict] = []
 
     for name, alpha in QUANTILES.items():
         params = {**PARAMS, "alpha": alpha}
+
+        # Train on the last fold to get calibration predictions
+        _, last_va_idx = splits[-1]
+        m_calib = lgb.LGBMRegressor(**params)
+        tr_idx_all_but_last = pd.Index([])
+        for tr_idx, _ in splits:
+            tr_idx_all_but_last = tr_idx_all_but_last.union(tr_idx)
+        # Actually just use all indices EXCEPT the last validation fold
+        last_va_set = set(last_va_idx.tolist())
+        calib_train_idx = df.index[~df.index.isin(last_va_set)]
+        m_calib.fit(
+            X_all.loc[calib_train_idx], y_all.loc[calib_train_idx],
+            eval_set=[(X_all.loc[last_va_idx], y_all.loc[last_va_idx])],
+            callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(0)],
+            categorical_feature=cats,
+        )
+        calib_preds = m_calib.predict(X_all.loc[last_va_idx])
+        for idx_val, pred in zip(last_va_idx, calib_preds):
+            calib_records.append({
+                "horizon": int(df.at[idx_val, "horizon_days"]),
+                "actual": float(df.at[idx_val, "cover_count"]),
+                "quantile": name,
+                "predicted": float(pred),
+            })
+
+        # Final model on ALL data (no hold-out — maximise training)
         m = lgb.LGBMRegressor(**params)
-        m.fit(X_train, y_train, categorical_feature=cats)
+        m.fit(X_all, y_all, categorical_feature=cats)
         trained_models[name] = m
-        calib_predictions[name] = m.predict(X_calib)
 
         pkl_path = model_dir / f"lgbm_horizon_q{int(alpha*100):02d}.pkl"
         txt_path = model_dir / f"lgbm_horizon_q{int(alpha*100):02d}.txt"
@@ -151,15 +161,12 @@ def train(
         json.dumps(feature_cols, indent=2)
     )
 
-    # Calibrate per-horizon buffer from held-out residuals
-    calib_df = pd.DataFrame({
-        "date": df_calib["date"].values,
-        "horizon": df_calib["horizon_days"].astype(int).values,
-        "actual": y_calib.values,
-        "lower": calib_predictions["lower"],
-        "median": calib_predictions["median"],
-        "upper": calib_predictions["upper"],
-    })
+    # Per-horizon conformal buffer from last-fold calibration residuals
+    calib_df = pd.DataFrame(calib_records)
+    pivoted = calib_df.pivot_table(
+        index=["horizon", "actual"],
+        columns="quantile", values="predicted",
+    ).reset_index()
 
     per_horizon_buffer: dict[int, float] = {}
     raw_cov: dict[int, float] = {}
@@ -167,30 +174,29 @@ def train(
     cal_width: dict[int, float] = {}
     per_horizon_wape: dict[int, float] = {}
 
-    log.info("horizon_aware_train.calibration.header",
-             msg="h  raw_cov  cal_cov  buffer  width  WAPE  n")
-    for h in sorted(calib_df["horizon"].unique()):
-        seg = calib_df[calib_df["horizon"] == h]
-        conformity = np.maximum(seg["lower"] - seg["actual"],
-                                seg["actual"] - seg["upper"])
-        buf = float(np.quantile(conformity, TARGET_COVERAGE))
+    for h in sorted(pivoted["horizon"].unique()):
+        seg = pivoted[pivoted["horizon"] == h]
+        lower_vals = seg["lower"].values
+        upper_vals = seg["upper"].values
+        actual_vals = seg["actual"].values
+        conformity = np.maximum(lower_vals - actual_vals, actual_vals - upper_vals)
+        buf = max(0.0, float(np.quantile(conformity, TARGET_COVERAGE)))
         per_horizon_buffer[int(h)] = buf
 
         raw_cov[int(h)] = float(
-            ((seg["actual"] >= seg["lower"]) & (seg["actual"] <= seg["upper"])).mean()
+            ((actual_vals >= lower_vals) & (actual_vals <= upper_vals)).mean()
         )
-        cal_lower = seg["lower"] - buf
-        cal_upper = seg["upper"] + buf
+        cal_lower = lower_vals - buf
+        cal_upper = upper_vals + buf
         cal_cov[int(h)] = float(
-            ((seg["actual"] >= cal_lower) & (seg["actual"] <= cal_upper)).mean()
+            ((actual_vals >= cal_lower) & (actual_vals <= cal_upper)).mean()
         )
         cal_width[int(h)] = float((cal_upper - cal_lower).mean())
         per_horizon_wape[int(h)] = float(
-            np.abs(seg["median"] - seg["actual"]).sum()
-            / max(np.abs(seg["actual"]).sum(), 1e-8)
+            np.abs(seg["median"].values - actual_vals).sum()
+            / max(np.abs(actual_vals).sum(), 1e-8)
         )
-
-        log.info("horizon_aware_train.calibration.row",
+        log.info("horizon_aware_train.calibration",
                  h=int(h), raw_cov=f"{raw_cov[int(h)]:.1%}",
                  cal_cov=f"{cal_cov[int(h)]:.1%}",
                  buffer=f"{buf:.0f}", width=f"{cal_width[int(h)]:.0f}",
@@ -200,14 +206,12 @@ def train(
     metrics = {
         "target_coverage": TARGET_COVERAGE,
         "train_end_date": train_end_date,
-        "calibrate_year": calibrate_year,
         "per_horizon_buffer": per_horizon_buffer,
         "raw_coverage_per_horizon": raw_cov,
         "calibrated_coverage_per_horizon": cal_cov,
         "interval_width_per_horizon": cal_width,
         "median_wape_per_horizon": per_horizon_wape,
-        "n_training_rows": len(df_train),
-        "n_calibration_rows": len(df_calib),
+        "n_training_rows": len(df),
         "n_features": len(feature_cols),
     }
     (model_dir / "horizon_aware_metrics.json").write_text(

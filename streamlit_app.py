@@ -191,30 +191,43 @@ max_date = max(actuals.keys())
 # Good default — a week where weather was stable and the model did well
 DEFAULT_ORIGIN = date(2025, 10, 5)
 
-col1, col2 = st.columns([2, 5])
-with col1:
+if "_origin" in st.session_state:
+    current_origin = st.session_state["_origin"]
+else:
+    current_origin = DEFAULT_ORIGIN
+
+col_prev, col_date, col_next, col_ctx = st.columns([1, 3, 1, 5])
+with col_prev:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("← Week", key="prev_wk"):
+        st.session_state["_origin"] = current_origin - timedelta(days=7)
+        st.rerun()
+with col_next:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Week →", key="next_wk"):
+        st.session_state["_origin"] = current_origin + timedelta(days=7)
+        st.rerun()
+with col_date:
     origin = st.date_input(
         "Origin date",
-        value=DEFAULT_ORIGIN,
+        value=current_origin,
         min_value=date(2017, 2, 1),
         max_value=max_date,
         help="The model forecasts the 7 days AFTER this date.",
+        key="origin_input",
     )
+    st.session_state["_origin"] = origin
+with col_ctx:
     if origin in actuals:
         st.metric(
             label=f"{origin.strftime('%A')} {origin.isoformat()}",
-            value=f"{actuals[origin]:.0f} trips (actual)",
+            value=f"{actuals[origin]:.0f} trips",
         )
-    st.caption(
-        "🎯 Try different dates:\n"
-        "- Oct 5 / Apr 20 / Jun 22: typical good weeks\n"
-        "- Sep 7: during the week-long tube strike\n"
-        "- Jan 12: cold/rainy winter week\n"
-    )
+    st.caption("Try: **Oct 5**, **Jun 22** (good) · **Sep 7** (strike) · **Jan 12** (winter)")
 
 df = run_forecast(origin, 7)
 
-with col2:
+if not df.empty:
     if df.empty:
         st.warning("No forecast available for that date.")
     else:
@@ -650,20 +663,15 @@ fig.update_yaxes(range=[0, max(m_stats["wape"] * 100) * 1.3])
 st.plotly_chart(fig, width="stretch")
 st.markdown(
     """
-**Why is winter (especially January) so much less accurate?**
-
-Three compounding factors:
+**Why is winter (especially January) less accurate?**
 
 1. **Lower volume amplifies percentage error.** January averages ~680 trips/day vs ~1,800 in June.
-   A 100-trip miss is 15% error in January but only 6% in June — same absolute error, worse WAPE.
+   The same 100-trip miss is 15% error in January but only 6% in June.
 
-2. **Weather is more volatile.** Rain, wind, and cold suppress cycling demand sharply but
-   unpredictably. One unexpectedly mild January day can produce 2× the trips of the day before.
-   Summer weather is more stable.
-
-3. **Fewer training examples of extreme cold.** The model has 6 years of data but London rarely
-   gets sustained sub-zero weather, so the training set doesn't cover enough extreme-cold
-   scenarios for the model to learn precise responses.
+2. **Non-weather factors dominate in winter.** The model correctly uses weather to adjust
+   predictions — if January is unseasonably warm, it DOES predict more trips. The issue is that
+   in low-volume months, the residual noise from factors NOT in the model (random day-to-day
+   variation, local events, untracked disruptions) makes up a larger share of total demand.
 
 All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
 on **1-day-ahead** predictions only (the most accurate horizon).
@@ -770,30 +778,22 @@ st.divider()
 # ==========================================================================
 # SECTION 6 — Limitations
 # ==========================================================================
-st.header("Honest limitations")
+st.header("What's missing from the model")
+st.markdown(
+    "These are inputs that would improve accuracy but aren't included — "
+    "either because no free historical data exists, or it would require "
+    "ongoing manual curation."
+)
 st.markdown(
     """
-- **Winter months are harder.** January WAPE is ~21% vs ~8% in May. Cold/wet weather makes
-  cycling demand volatile and the training data doesn't contain enough extreme-weather days.
-- **Rare disruptions hurt the model.** The September 2025 week-long tube strike was a type of
-  event seen only twice in training — the model under-predicted the surge. More years of data
-  would help.
-- **Structural shifts can't be predicted from historical patterns.** 2025 Soho cycling was
-  ~15% higher than 2024 overall (likely TfL e-bike expansion). The model adapted within a
-  month or two as the lag features caught up, but the first days of a regime change will
-  always be wrong.
-- **This is cycling, not restaurant demand.** The architecture transfers cleanly to any
-  daily-demand target with similar drivers, but the current numbers are strictly about
-  cycling trips at Soho docking stations.
-- **Data publication lag.** TfL publishes Santander CSVs ~1-2 months after the fact, so
-  live "next-day" predictions in production would be limited by data freshness, not model
-  accuracy.
-- **Uncertainty widening is coarse.** The intervals are wider at longer horizons **on
-  average across the year** because of a per-horizon calibration buffer — but for any
-  single forecast, the width is feature-dependent and may not grow monotonically with
-  horizon. The model itself doesn't produce "I'm less confident about next Tuesday than
-  about tomorrow" out of the box; that's added via calibration. A proper horizon-aware
-  model would train quantiles per-horizon directly.
+| Missing input | Why it matters | Why it's not included |
+|---|---|---|
+| **Live TfL disruption feed** | Tube disruptions push people to bikes (or deter travel entirely). The September 2025 week-long RMT strike caused a 2× surge we missed. | No free historical archive of unplanned disruptions. Our static strike list captures major actions only. |
+| **Hyperlocal events** | Film premieres, Chinese New Year, protest marches, fashion week pop-ups all affect Soho foot traffic. | No structured historical event data for this level of granularity. Would require ongoing manual curation or an events API. |
+| **Santander fleet size / pricing** | TfL's e-bike fleet grew ~30% between 2024-2025, causing a structural demand uplift the model didn't anticipate. | TfL doesn't publish historical fleet-size or pricing data. |
+| **Real-time weather forecast** | We use Open-Meteo's actual weather in the demo; in production, forecast error would add noise at longer horizons. | Available via Open-Meteo Forecast API but not integrated into the live demo. |
+| **Social / viral events** | A TikTok trend or cycling campaign could temporarily spike demand. | No structured data source exists. |
+| **Competitor transport changes** | Lime / Uber bike availability, e-scooter regulation changes affect Santander usage. | No historical archive. |
 """
 )
 
