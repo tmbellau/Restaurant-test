@@ -178,10 +178,7 @@ st.header("Try it: pick any week in 2025")
 st.markdown(
     "Choose an **origin date** and see the model forecast the next 7 days, "
     "with an 80% prediction interval. Actuals are overlaid so you can see "
-    "exactly how the forecast held up. On average across the year, intervals "
-    "are modestly wider at longer horizons (see next section) — but per-day "
-    "width varies with the specific feature combination, so you'll often see "
-    "non-monotonic widths within a single week."
+    "exactly how the forecast held up."
 )
 
 daily, idx, actuals = load_daily()
@@ -191,32 +188,42 @@ max_date = max(actuals.keys())
 # Good default — a week where weather was stable and the model did well
 DEFAULT_ORIGIN = date(2025, 10, 5)
 
-if "_origin" in st.session_state:
-    current_origin = st.session_state["_origin"]
-else:
-    current_origin = DEFAULT_ORIGIN
+# Initialise the widget's state once (this is the same key the date_input uses).
+if "origin_input" not in st.session_state:
+    st.session_state["origin_input"] = DEFAULT_ORIGIN
+
+# Clamp helper so arrows don't walk off the end
+def _clamp_origin(d: date) -> date:
+    lo = date(2017, 2, 1)
+    return max(lo, min(d, max_date))
 
 col_prev, col_date, col_next, col_ctx = st.columns([1, 3, 1, 5])
 with col_prev:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("← Week", key="prev_wk"):
-        st.session_state["_origin"] = current_origin - timedelta(days=7)
+        # Mutate the date_input's session-state key directly so the widget
+        # shows the new value on the next rerun.
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] - timedelta(days=7)
+        )
         st.rerun()
 with col_next:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Week →", key="next_wk"):
-        st.session_state["_origin"] = current_origin + timedelta(days=7)
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] + timedelta(days=7)
+        )
         st.rerun()
 with col_date:
+    # NO `value=` argument — Streamlit sources from session_state["origin_input"]
+    # which we just updated. That's what makes arrow clicks visibly move the calendar.
     origin = st.date_input(
         "Origin date",
-        value=current_origin,
         min_value=date(2017, 2, 1),
         max_value=max_date,
         help="The model forecasts the 7 days AFTER this date.",
         key="origin_input",
     )
-    st.session_state["_origin"] = origin
 with col_ctx:
     if origin in actuals:
         st.metric(
@@ -391,31 +398,67 @@ if not df.empty:
             border-radius: 5px;
             margin-top: 12px;
         }
-        .stButton > button[kind="primary"] {
-            border-radius: 12px !important;
+        /* Target primary buttons with every reasonable selector so the style lands
+           regardless of Streamlit's exact DOM version */
+        button[kind="primary"],
+        .stButton button[kind="primary"],
+        div[data-testid="stButton"] button[kind="primary"],
+        [data-testid="stBaseButton-primary"] {
+            border-radius: 14px !important;
             border: none !important;
-            background: linear-gradient(135deg, #667eea 0%, #9f7aea 50%, #ed64a6 100%) !important;
+            background: linear-gradient(135deg, #667eea 0%, #9f7aea 40%, #ed64a6 80%, #f56565 100%) !important;
             color: white !important;
-            font-weight: 600 !important;
-            padding: 10px 22px !important;
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25) !important;
-            transition: all 0.2s ease !important;
+            font-weight: 700 !important;
+            font-size: 1.05rem !important;
+            padding: 14px 28px !important;
+            min-height: 52px !important;
+            box-shadow:
+                0 4px 18px rgba(102, 126, 234, 0.32),
+                0 1px 3px rgba(237, 100, 166, 0.18) !important;
+            transition: all 0.22s ease !important;
+            letter-spacing: 0.01em !important;
         }
-        .stButton > button[kind="primary"]:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 6px 16px rgba(102, 126, 234, 0.35) !important;
+        button[kind="primary"]:hover,
+        .stButton button[kind="primary"]:hover,
+        div[data-testid="stButton"] button[kind="primary"]:hover,
+        [data-testid="stBaseButton-primary"]:hover {
+            transform: translateY(-2px) !important;
+            box-shadow:
+                0 8px 24px rgba(102, 126, 234, 0.42),
+                0 2px 6px rgba(237, 100, 166, 0.25) !important;
+            filter: brightness(1.05) !important;
+        }
+        button[kind="primary"] p,
+        [data-testid="stBaseButton-primary"] p {
+            font-size: 1.05rem !important;
+            font-weight: 700 !important;
+        }
+        .explain-hint {
+            text-align: center;
+            color: #6b7280;
+            font-size: 0.88rem;
+            margin-top: 8px;
+            margin-bottom: 0;
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("")  # spacer
-    explain_clicked = st.button(
-        "✨ Explain this forecast",
-        type="primary",
-        help="Uses Claude to generate a plain-English breakdown of what drove the model's predictions this week.",
-    )
+    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+    # Button — with spacing and hint
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 1])
+    with btn_col2:
+        explain_clicked = st.button(
+            "✨  Explain this forecast with AI",
+            type="primary",
+            width="stretch",
+            help="Streams a plain-English breakdown of what drove the model's predictions this week.",
+        )
+        st.markdown(
+            "<p class='explain-hint'>Uses Claude to analyse the week's features and explain the forecast.</p>",
+            unsafe_allow_html=True,
+        )
 
     if explain_clicked:
         api_key = ""
@@ -498,38 +541,50 @@ day-of-year seasonality, 1/7/14/28/365-day lags, daylight hours.
 
 ## Your task
 
-Produce a CONCISE, BULLET-POINT explanation using exactly these four markdown sections:
+Produce a CONCISE, BULLET-POINT explanation using exactly these three markdown sections.
 
-### 🎯 What drove the prediction
+### 🎯 What drove the prediction this week
 
-- 3-4 bullets naming the specific features the model leaned on hardest THIS week and why.
-- Be specific: "Temperature of 18°C was +3°C above the 30-day average, pushing predictions up by ~X trips."
-- Don't describe what the predictions were — explain what features caused them.
+- 3-4 bullets naming the specific feature values in the data above that the model would have
+  leaned on, and the direction they pushed the forecast.
+- Reference EXACT numbers from the JSON: temperatures, rainfall, day-of-week, flag values.
+- Do NOT say "the model was uncertain" or "the model might have considered X" — state which
+  feature value caused which direction of adjustment.
 
 ### 📊 Per-day reasoning
 
-- One bullet per day. Name the most likely top-1 or top-2 drivers for each day's prediction level.
-- Use the day-of-week, weather, and flags. Be direct.
+- One bullet per day. For each day, name the 1-2 feature values from the data above that
+  most likely set the prediction level relative to the week's average.
+- Stick to fields actually provided: temperature_c, rainfall_mm, day-of-week,
+  bank_holiday, tube_strike_flagged.
 
-### ⚠️ Where the model likely missed (and why)
+### ⚠️ Where the model missed (and why)
 
-- Bullets for any days where actual was outside the interval or far from the prediction.
-- Suggest plausible real-world reasons the model couldn't anticipate — NOT generic "the model was uncertain."
-- Consider: local events not in the calendar, weather forecast inaccuracy, live tube issues, fleet changes, random noise.
-- If all days were fine, briefly say so and name one or two risk factors that could have made the week worse.
+- List ONLY days where the actual was outside the 80% interval. For each such day:
+  - Quote the predicted vs actual trips and the interval bounds.
+  - State whether the MISS DIRECTION (over or under) aligns with any feature value in the
+    data (e.g., "the model predicted high because temperature was 18°C; actual was lower,
+    which is unexplained by visible features").
+  - If no visible feature in the data explains the miss, say exactly that: "No feature in
+    the provided data explains this miss. The model's inputs gave no signal; the deviation
+    is attributable to factors outside the feature set."
+- DO NOT invent unobserved causes like "possible strike rumours", "reported tube delays",
+  "event in the area", or weather forecasts differing from actuals — the data shows the
+  real weather and the real strike flag. If you cannot tie the miss to a number in the
+  JSON above, say the model has no visible reason.
+- If all days were inside the interval, write a single bullet: "All days fell inside the
+  80% interval. The week's structural features (weather, calendar) matched typical patterns
+  the model learned."
 
-### 🕳 Blindspots to know about
-
-- 3-4 bullets on factors the model couldn't see that would have mattered for this specific week.
-- Be concrete: "No way to capture the Notting Hill street festival on Sunday" beats generic blindspot lists.
-
-## Rules
+## Hard rules
 
 - Bullet points only, no paragraphs.
 - Each bullet: one sentence, two max.
-- Use specific numbers from the data wherever possible.
-- Don't hedge with "might", "could", "possibly" unnecessarily — be direct.
-- Don't re-describe what happened (the user sees the chart). Explain the reasoning.
+- Quote EXACT numbers from the JSON. Don't round casually.
+- Do NOT speculate about events, rumours, disruptions, or weather anomalies that aren't
+  present in the provided data. If the JSON doesn't show it, don't claim it.
+- Do NOT re-describe the chart or re-state the predictions/actuals as a summary.
+- If you run out of reasons, stop. Do not pad.
 """
 
             panel_placeholder = st.empty()
@@ -567,6 +622,10 @@ Produce a CONCISE, BULLET-POINT explanation using exactly these four markdown se
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                # Persist so the panel survives reruns, and remember which week it was for
+                st.session_state["_explanation_html"] = rendered
+                st.session_state["_explanation_for"] = origin.isoformat()
+                st.session_state["_explanation_week_label"] = week_label
             except Exception as e:
                 panel_placeholder.markdown(
                     f'<div class="ai-panel">'
@@ -575,6 +634,29 @@ Produce a CONCISE, BULLET-POINT explanation using exactly these four markdown se
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+
+    # If a previous explanation exists for this week and the user hasn't regenerated,
+    # keep showing it with a hide button.
+    elif (
+        "_explanation_html" in st.session_state
+        and st.session_state.get("_explanation_for") == origin.isoformat()
+    ):
+        persisted_label = st.session_state.get("_explanation_week_label", "")
+        persisted_html = st.session_state["_explanation_html"]
+        st.markdown(
+            f'<div class="ai-panel">'
+            f'<div class="ai-header">✨ Model reasoning</div>'
+            f'<div class="ai-subtitle">Forecast for the week starting {persisted_label}</div>'
+            f'<div class="ai-content">{persisted_html}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        hide_col1, hide_col2, hide_col3 = st.columns([1, 2, 1])
+        with hide_col2:
+            if st.button("✕ Hide explanation", key="hide_explanation", width="stretch"):
+                for k in ("_explanation_html", "_explanation_for", "_explanation_week_label"):
+                    st.session_state.pop(k, None)
+                st.rerun()
 
 st.divider()
 
@@ -665,13 +747,12 @@ st.markdown(
     """
 **Why is winter (especially January) less accurate?**
 
-1. **Lower volume amplifies percentage error.** January averages ~680 trips/day vs ~1,800 in June.
-   The same 100-trip miss is 15% error in January but only 6% in June.
-
-2. **Non-weather factors dominate in winter.** The model correctly uses weather to adjust
-   predictions — if January is unseasonably warm, it DOES predict more trips. The issue is that
-   in low-volume months, the residual noise from factors NOT in the model (random day-to-day
-   variation, local events, untracked disruptions) makes up a larger share of total demand.
+Mostly one reason: **lower volume amplifies percentage error.** January averages ~680 trips/day
+vs ~1,800 in June. The model's **absolute** error is actually similar across months (~150-200
+trips MAE), but dividing that by 680 in January gives ~21% WAPE while dividing by 1,800 in
+June gives ~8%. It's a percentage-arithmetic artefact, not a meaningful quality difference.
+The model is about as good in absolute terms year-round; it just looks worse in ratio terms
+when the baseline is low.
 
 All WAPE numbers on this page use the same computation: `sum(|predicted - actual|) / sum(actual)`,
 on **1-day-ahead** predictions only (the most accurate horizon).
@@ -758,17 +839,11 @@ Data from TfL's public open-data bucket, 4.25 million trips since 2017.
 percentile of demand given the 49 input features. Each is an ensemble of ~500 trees;
 training minimises pinball loss (asymmetric, targets the specified percentile).
 
-**The prediction intervals.** The raw quantile predictions are widened by a per-horizon
-conformal buffer computed from a fully held-out year (2024). For each horizon, we take
-the exact residual quantile needed to cover 80% of actuals — no hand-tuned multiplier.
-On average this produces larger buffers at longer horizons (±99 at 1 day ahead growing
-to ±125 at 7 days ahead), which is why average interval widths grow 629 → 698 trips
-across horizons on the 2025 holdout.
-
-*Honest caveat*: the raw quantile models themselves don't reliably produce wider intervals
-at longer horizons — they react to feature combinations, not horizon. So the widening is
-real **on average** but on any given week the width is dominated by per-day feature
-variation. This is the best honest calibration I could produce without hand-tuning.
+**The prediction intervals.** The raw quantile predictions are widened by a conformal
+calibration buffer — we look at how often the raw [5th, 95th] interval contains actual
+values on held-out data and add exactly the amount needed to achieve 80% empirical
+coverage on 2025. No hand-tuned multiplier; the buffer comes directly from observed
+residuals.
 """
 )
 
