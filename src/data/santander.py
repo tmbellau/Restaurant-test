@@ -248,22 +248,21 @@ def aggregate_hourly(
     station_ids: set[str],
     restaurant_id: str = RESTAURANT_ID,
 ) -> pd.DataFrame:
-    """Aggregate per-trip records to hourly counts (starts + ends) at target stations.
+    """Aggregate per-trip records to hourly counts at target stations.
+
+    download_and_filter already restricts trips to those involving our
+    target stations (by ID or name). Here we count starts and ends per
+    hour. We DON'T re-filter by station_ids because pre-2022 CSV files
+    use different ID schemes — the trip is already verified to involve
+    a Soho station.
 
     Returns columns: timestamp_utc, restaurant_id, cover_count, channel.
     """
     if trips.empty:
         return pd.DataFrame(columns=["timestamp_utc", "restaurant_id", "cover_count", "channel"])
 
-    starts_mask = trips["start_station"].isin(station_ids)
-    ends_mask = trips["end_station"].isin(station_ids)
-
-    start_hours = (
-        trips.loc[starts_mask, "start_ts"].dt.floor("h").value_counts().sort_index()
-    )
-    end_hours = (
-        trips.loc[ends_mask, "end_ts"].dt.floor("h").value_counts().sort_index()
-    )
+    start_hours = trips["start_ts"].dt.floor("h").value_counts().sort_index()
+    end_hours = trips["end_ts"].dropna().dt.floor("h").value_counts().sort_index()
     combined = start_hours.add(end_hours, fill_value=0).astype(int)
 
     idx = pd.to_datetime(combined.index)

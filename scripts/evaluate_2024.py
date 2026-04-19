@@ -143,8 +143,8 @@ def main() -> None:
     daily_idx = {d.date(): i for d, i in zip(daily_all["date"], daily_all.index)}
     actuals: dict[date, float] = {d.date(): float(c) for d, c in zip(daily_all["date"], daily_all["cover_count"])}
 
-    # Holdout target = all 2024 days
-    target_dates = pd.date_range("2024-01-01", "2024-12-30", freq="D")
+    # Holdout target = all 2025 days
+    target_dates = pd.date_range("2025-01-01", "2025-12-31", freq="D")
     target_dates = pd.DatetimeIndex([d for d in target_dates if d.date() in daily_idx])
     print(f"Holdout dates: {target_dates[0].date()} to {target_dates[-1].date()} ({len(target_dates)} days)")
 
@@ -173,7 +173,7 @@ def main() -> None:
         results[name] = df
 
     # === Baselines (train lookup on pre-2024 data only) ===
-    pre2024 = daily_all[daily_all["date"] < "2024-01-01"]
+    pre2024 = daily_all[daily_all["date"] < "2025-01-01"]
     lookup_table = dow_month_lookup_fit(pre2024)
 
     baseline_records = []
@@ -198,7 +198,7 @@ def main() -> None:
 
     # === Summary table ===
     print("\n" + "=" * 80)
-    print("ROLLING 7-DAY-AHEAD WAPE — 2024 HOLDOUT (trained on 2022-2023 ex-COVID)")
+    print("ROLLING 7-DAY-AHEAD WAPE — 2025 HOLDOUT (trained on 2017-2024 ex-COVID)")
     print("=" * 80)
 
     model_names = list(results.keys())

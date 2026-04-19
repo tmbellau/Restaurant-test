@@ -16,6 +16,20 @@ log = structlog.get_logger(__name__)
 
 # England school holidays (approximate windows).
 _SCHOOL_HOLIDAYS = [
+    # 2017
+    (date(2017, 2, 13), date(2017, 2, 17)),
+    (date(2017, 4, 3), date(2017, 4, 14)),
+    (date(2017, 5, 29), date(2017, 6, 2)),
+    (date(2017, 7, 24), date(2017, 9, 1)),
+    (date(2017, 10, 23), date(2017, 10, 27)),
+    (date(2017, 12, 18), date(2018, 1, 1)),
+    # 2018
+    (date(2018, 2, 12), date(2018, 2, 16)),
+    (date(2018, 3, 29), date(2018, 4, 13)),
+    (date(2018, 5, 28), date(2018, 6, 1)),
+    (date(2018, 7, 23), date(2018, 9, 3)),
+    (date(2018, 10, 22), date(2018, 10, 26)),
+    (date(2018, 12, 21), date(2019, 1, 4)),
     # 2019
     (date(2019, 2, 18), date(2019, 2, 22)),
     (date(2019, 4, 8), date(2019, 4, 22)),
