@@ -26,7 +26,6 @@ from pathlib import Path
 import pandas as pd
 import structlog
 
-from src.data.feature_channels import get_active_channels, get_cold_channels
 from src.data.historical_weather import fetch_weather
 from src.data.santander import (
     RESTAURANT_ID,
@@ -57,8 +56,6 @@ def build(
         "training.build.start",
         start=start_date.isoformat(),
         end=end_date.isoformat(),
-        active_channels=get_active_channels(),
-        cold_channels=get_cold_channels(),
     )
 
     # 1. Santander hourly trip counts at Soho stations — REAL demand target

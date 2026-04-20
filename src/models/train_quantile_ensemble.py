@@ -22,12 +22,6 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from src.models.train_london_daily import (
-    DEFAULT_PARAMS,
-    prepare_xy,
-    walk_forward,
-)
-
 log = structlog.get_logger(__name__)
 
 DEFAULT_INPUT = Path("data/training/daily_training_features.parquet")
@@ -38,6 +32,49 @@ QUANTILES = {
     "median": 0.50,
     "upper": 0.95,
 }
+
+EXCLUDE_COLS = {"cover_count", "date", "restaurant_id"}
+CATEGORICAL = ["city_tier", "footfall_zone_class", "country_code"]
+
+DEFAULT_PARAMS = {
+    "objective": "quantile",
+    "alpha": 0.5,
+    "num_leaves": 63,
+    "learning_rate": 0.05,
+    "min_child_samples": 10,
+    "colsample_bytree": 0.8,
+    "subsample": 0.8,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "n_estimators": 2000,
+    "verbose": -1,
+}
+
+
+def prepare_xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, list[str]]:
+    feature_cols = [c for c in df.columns if c not in EXCLUDE_COLS]
+    X = df[feature_cols].copy()
+    y = df["cover_count"].copy()
+    for c in CATEGORICAL:
+        if c in X.columns:
+            X[c] = X[c].astype("category")
+    cats = [c for c in CATEGORICAL if c in X.columns]
+    return X, y, cats
+
+
+def walk_forward(df: pd.DataFrame, n_folds: int = 5, min_train_days: int = 90):
+    """Expanding-window walk-forward CV splits (time-ordered)."""
+    df = df.sort_values("date").reset_index(drop=True)
+    n = len(df)
+    fold_size = (n - min_train_days) // n_folds
+    splits = []
+    for i in range(n_folds):
+        train_end = min_train_days + i * fold_size
+        val_end = min(train_end + fold_size, n)
+        if val_end <= train_end:
+            break
+        splits.append((df.index[:train_end], df.index[train_end:val_end]))
+    return splits
 
 
 def train_quantile_ensemble(
