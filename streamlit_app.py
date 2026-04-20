@@ -746,24 +746,121 @@ with tab_perf:
         st.caption("WAPE (lower = better) grows gently with horizon, from ~12% at 1 day to ~13% at 7 days.")
 
     with c2:
+        # Over/under estimate distribution (1-day-ahead)
+        errs = h1["error"].copy()  # predicted - actual
         fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=h_stats["horizon"].astype(str) + "d ahead",
-            y=(h_stats["coverage"] * 100).round(1),
-            marker_color=["#2ca02c" if c >= 0.77 else "#ff7f0e" for c in h_stats["coverage"]],
-            text=(h_stats["coverage"] * 100).round(0).astype(int).astype(str) + "%",
-            textposition="outside",
+        fig.add_trace(go.Histogram(
+            x=errs[errs >= 0], name="Over-predicted",
+            marker_color="#d62728", opacity=0.75, nbinsx=30,
         ))
-        fig.add_hline(y=80, line_dash="dash", line_color="#555",
-                      annotation_text="80% target", annotation_position="top right")
+        fig.add_trace(go.Histogram(
+            x=errs[errs < 0], name="Under-predicted",
+            marker_color="#1f77b4", opacity=0.75, nbinsx=30,
+        ))
+        over_pct = (errs >= 0).mean() * 100
+        under_pct = (errs < 0).mean() * 100
+        fig.add_vline(x=0, line_width=1.5, line_color="black")
         fig.update_layout(
-            title="Prediction interval coverage",
-            yaxis_title="Coverage (%)", xaxis_title=None,
-            height=320, showlegend=False, margin=dict(l=0, r=0, t=40, b=0),
+            title=f"Over vs under prediction ({over_pct:.0f}% over / {under_pct:.0f}% under)",
+            xaxis_title="Error (predicted − actual trips)",
+            yaxis_title="Days",
+            height=320, showlegend=True, barmode="overlay",
+            margin=dict(l=0, r=0, t=40, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
-        fig.update_yaxes(range=[0, 100])
         st.plotly_chart(fig, width="stretch")
-        st.caption("Actuals fall inside the interval ~80% of the time at every horizon — that's the target the interval is calibrated to hit.")
+        st.caption(f"Median error: {errs.median():+.0f} trips. The model slightly {'over' if errs.median() > 0 else 'under'}-predicts on average.")
+
+    # Predicted vs actual scatter with regression line + labelled outliers
+    st.markdown("##### Predicted vs actual (1-day-ahead)")
+    fig = go.Figure()
+
+    # Main scatter — colour by % error
+    r_val = float(np.corrcoef(h1["actual"], h1["predicted"])[0, 1])
+    fig.add_trace(go.Scatter(
+        x=h1["actual"], y=h1["predicted"],
+        mode="markers", name="Days",
+        marker=dict(
+            size=7, color=h1["pct_error"].abs().clip(upper=50),
+            colorscale="RdYlGn_r", showscale=True,
+            colorbar=dict(title="|% error|", thickness=12),
+            opacity=0.7,
+        ),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Actual: %{x:.0f}<br>Predicted: %{y:.0f}<br>"
+            "Error: %{customdata[1]:+.0f} (%{customdata[2]:+.1f}%)<extra></extra>"
+        ),
+        customdata=list(zip(
+            h1["target"].dt.strftime("%a %b %d"),
+            h1["error"].round(0),
+            h1["pct_error"].round(1),
+        )),
+    ))
+
+    # Perfect-prediction line
+    lo = min(h1["actual"].min(), h1["predicted"].min()) * 0.9
+    hi = max(h1["actual"].max(), h1["predicted"].max()) * 1.05
+    fig.add_trace(go.Scatter(
+        x=[lo, hi], y=[lo, hi], mode="lines",
+        line=dict(dash="dash", color="#888", width=1.5),
+        name="Perfect", showlegend=False,
+    ))
+
+    # Linear regression line
+    coefs = np.polyfit(h1["actual"].values, h1["predicted"].values, 1)
+    fig.add_trace(go.Scatter(
+        x=[lo, hi], y=np.polyval(coefs, [lo, hi]), mode="lines",
+        line=dict(color="#d62728", width=1.5),
+        name=f"Linear fit (slope {coefs[0]:.2f})", showlegend=True,
+    ))
+
+    # Label significant outliers (>40% error or >500 trip absolute error)
+    outliers = h1[(h1["pct_error"].abs() > 40) | (h1["abs_err"] > 500)].copy()
+    if len(outliers) > 0:
+        # Pick top-5 biggest outliers to label so the chart isn't cluttered
+        outliers = outliers.nlargest(5, "abs_err")
+        for _, row in outliers.iterrows():
+            day_str = row["target"].strftime("%b %d")
+            month = row["target"].month
+            # Give a concise reason based on what we know
+            if row["is_outage"]:
+                reason = "data outage"
+            elif month == 1:
+                reason = "winter low-volume"
+            elif month == 9 and row["actual"] > row["predicted"] * 1.3:
+                reason = "tube strike week"
+            elif month in (7, 8) and row["actual"] < row["predicted"] * 0.1:
+                reason = "data outage"
+            elif abs(row["error"]) > 400:
+                reason = "high error, likely untracked event"
+            else:
+                reason = "large miss"
+            fig.add_annotation(
+                x=float(row["actual"]), y=float(row["predicted"]),
+                text=f"{day_str}: {reason}",
+                showarrow=True, arrowhead=2, arrowsize=0.8,
+                font=dict(size=9, color="#d62728"),
+                ax=30, ay=-25,
+            )
+
+    fig.update_layout(
+        title=f"Predicted vs actual — r = {r_val:.3f}, slope = {coefs[0]:.2f}",
+        xaxis_title="Actual daily trips",
+        yaxis_title="Predicted daily trips",
+        height=420,
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    fig.update_xaxes(range=[lo, hi])
+    fig.update_yaxes(range=[lo, hi])
+    st.plotly_chart(fig, width="stretch")
+    slope_note = (
+        "A slope < 1.0 means the model under-predicts on the busiest days and "
+        "over-predicts on the quietest days (regression to the mean). "
+    )
+    if coefs[0] < 0.95:
+        slope_note += f"At slope {coefs[0]:.2f}, a day with 2,000 actual trips gets predicted ~{2000*coefs[0]:.0f}."
+    st.caption(slope_note)
 
     # Monthly WAPE breakdown
     st.markdown("##### Accuracy month by month (1-day-ahead)")
