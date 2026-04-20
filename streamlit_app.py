@@ -209,7 +209,14 @@ def _clamp_origin(d: date) -> date:
     lo = date(2017, 2, 1)
     return max(lo, min(d, max_date))
 
-col_dprev, col_prev, col_date, col_next, col_dnext, col_ctx = st.columns([1, 1, 3, 1, 1, 4])
+col_wprev, col_dprev, col_date, col_dnext, col_wnext, col_ctx = st.columns([1, 1, 3, 1, 1, 4])
+with col_wprev:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("← Week", key="prev_wk"):
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] - timedelta(days=7)
+        )
+        st.rerun()
 with col_dprev:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("← Day", key="prev_day"):
@@ -217,25 +224,18 @@ with col_dprev:
             st.session_state["origin_input"] - timedelta(days=1)
         )
         st.rerun()
-with col_prev:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("← Week", key="prev_wk"):
-        st.session_state["origin_input"] = _clamp_origin(
-            st.session_state["origin_input"] - timedelta(days=7)
-        )
-        st.rerun()
-with col_next:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("Week →", key="next_wk"):
-        st.session_state["origin_input"] = _clamp_origin(
-            st.session_state["origin_input"] + timedelta(days=7)
-        )
-        st.rerun()
 with col_dnext:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Day →", key="next_day"):
         st.session_state["origin_input"] = _clamp_origin(
             st.session_state["origin_input"] + timedelta(days=1)
+        )
+        st.rerun()
+with col_wnext:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Week →", key="next_wk"):
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] + timedelta(days=7)
         )
         st.rerun()
 with col_date:
@@ -262,62 +262,66 @@ if not df.empty:
     else:
         fig = go.Figure()
 
-        # Past context (14 days of actuals)
-        hist_dates = [origin - timedelta(days=k) for k in range(14, -1, -1)]
+        # Past context — shortened to 7 days, subtle styling
+        hist_dates = [origin - timedelta(days=k) for k in range(7, -1, -1)]
         hist_vals = [actuals.get(d) for d in hist_dates]
         fig.add_trace(go.Scatter(
             x=hist_dates, y=hist_vals, mode="lines+markers",
-            name="Past actuals",
-            line=dict(color="#888", width=2), marker=dict(size=5),
+            name="Known data",
+            line=dict(color="#aaa", width=2), marker=dict(size=4, color="#aaa"),
             hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f}<extra></extra>",
         ))
 
-        # 80% interval
+        # 80% interval band
         fig.add_trace(go.Scatter(
             x=list(df["target"]) + list(df["target"])[::-1],
             y=list(df["upper"]) + list(df["lower"])[::-1],
-            fill="toself", fillcolor="rgba(31,119,180,0.18)",
+            fill="toself", fillcolor="rgba(31,119,180,0.15)",
             line=dict(color="rgba(31,119,180,0)"),
             name="80% interval", hoverinfo="skip",
         ))
 
-        # Forecast — label each point as Day 1..7
-        day_labels = [f"Day {h}" for h in df["horizon"]]
-        fig.add_trace(go.Scatter(
-            x=df["target"], y=df["predicted"],
-            mode="lines+markers+text", name="Forecast",
-            line=dict(color="#1f77b4", width=3), marker=dict(size=10),
-            text=day_labels,
-            textposition="top center",
-            textfont=dict(size=10, color="#1f77b4"),
-            customdata=list(zip(
-                df["lower"].round(0), df["upper"].round(0),
-                df["horizon"],
-                [f"Day {h}" for h in df["horizon"]],
-            )),
-            hovertemplate=(
-                "<b>%{customdata[3]}</b> — %{x|%a %b %d}<br>"
-                "Forecast: %{y:.0f} trips<br>"
-                "80%% interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
-            ),
-        ))
-
-        # Actuals overlay
+        # Actuals in the forecast window — continuous grey line (like the history)
         if df["actual"].notna().any():
             kn = df[df["actual"].notna()]
-            in_iv = (kn["actual"] >= kn["lower"]) & (kn["actual"] <= kn["upper"])
-            colors = ["#2ca02c" if b else "#d62728" for b in in_iv]
             fig.add_trace(go.Scatter(
                 x=kn["target"], y=kn["actual"],
-                mode="markers", name="Actual",
-                marker=dict(size=13, color=colors, symbol="diamond",
-                            line=dict(color="white", width=1.5)),
+                mode="lines+markers", name="Actual",
+                line=dict(color="#888", width=2, dash="dot"),
+                marker=dict(size=5, color="#888"),
                 customdata=[f"Day {h}" for h in kn["horizon"]],
                 hovertemplate=(
                     "<b>%{customdata}</b> — %{x|%a %b %d}<br>"
                     "Actual: %{y:.0f} trips<extra></extra>"
                 ),
             ))
+
+        # Forecast — coloured diamond markers with connecting line + Day labels
+        day_labels = [f"Day {h}" for h in df["horizon"]]
+        in_iv = pd.Series([True] * len(df), index=df.index)
+        if df["actual"].notna().any():
+            in_iv = (df["actual"] >= df["lower"]) & (df["actual"] <= df["upper"])
+            in_iv = in_iv.fillna(True)
+        marker_colors = ["#1f77b4" if b else "#d62728" for b in in_iv]
+        fig.add_trace(go.Scatter(
+            x=df["target"], y=df["predicted"],
+            mode="lines+markers+text", name="Forecast",
+            line=dict(color="#1f77b4", width=2, dash="solid"),
+            marker=dict(size=14, color=marker_colors, symbol="diamond",
+                        line=dict(color="white", width=1.5)),
+            text=day_labels,
+            textposition="top center",
+            textfont=dict(size=10, color="#1f77b4"),
+            customdata=list(zip(
+                df["lower"].round(0), df["upper"].round(0),
+                [f"Day {h}" for h in df["horizon"]],
+            )),
+            hovertemplate=(
+                "<b>%{customdata[2]}</b> — %{x|%a %b %d}<br>"
+                "Forecast: %{y:.0f} trips<br>"
+                "80%% interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
+            ),
+        ))
 
         # Origin marker
         fig.add_vline(x=origin, line_width=1.5, line_dash="dot", line_color="#555")
