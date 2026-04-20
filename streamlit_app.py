@@ -186,11 +186,11 @@ st.divider()
 # ==========================================================================
 # SECTION 2 — Live demo
 # ==========================================================================
-st.header("Try it: pick any week in 2025")
+st.header("Try it: pick a date in 2025")
 st.markdown(
-    "Choose an **origin date** and see the model forecast the next 7 days, "
-    "with an 80% prediction interval. Actuals are overlaid so you can see "
-    "exactly how the forecast held up."
+    "Choose a **starting date** (Day 0). The model then forecasts **all 7 days ahead at once** — "
+    "tomorrow (Day 1) through to a week from now (Day 7) — using only what it knows up to Day 0. "
+    "The further out the forecast, the less the model knows, so accuracy naturally drops."
 )
 
 daily, idx, actuals = load_daily()
@@ -209,12 +209,17 @@ def _clamp_origin(d: date) -> date:
     lo = date(2017, 2, 1)
     return max(lo, min(d, max_date))
 
-col_prev, col_date, col_next, col_ctx = st.columns([1, 3, 1, 5])
+col_dprev, col_prev, col_date, col_next, col_dnext, col_ctx = st.columns([1, 1, 3, 1, 1, 4])
+with col_dprev:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("← Day", key="prev_day"):
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] - timedelta(days=1)
+        )
+        st.rerun()
 with col_prev:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("← Week", key="prev_wk"):
-        # Mutate the date_input's session-state key directly so the widget
-        # shows the new value on the next rerun.
         st.session_state["origin_input"] = _clamp_origin(
             st.session_state["origin_input"] - timedelta(days=7)
         )
@@ -226,21 +231,26 @@ with col_next:
             st.session_state["origin_input"] + timedelta(days=7)
         )
         st.rerun()
+with col_dnext:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Day →", key="next_day"):
+        st.session_state["origin_input"] = _clamp_origin(
+            st.session_state["origin_input"] + timedelta(days=1)
+        )
+        st.rerun()
 with col_date:
-    # NO `value=` argument — Streamlit sources from session_state["origin_input"]
-    # which we just updated. That's what makes arrow clicks visibly move the calendar.
     origin = st.date_input(
-        "Origin date",
+        "Day 0 (last known data)",
         min_value=date(2017, 2, 1),
         max_value=max_date,
-        help="The model forecasts the 7 days AFTER this date.",
+        help="The model uses everything up to and including this date, then forecasts the next 7 days.",
         key="origin_input",
     )
 with col_ctx:
     if origin in actuals:
         st.metric(
-            label=f"{origin.strftime('%A')} {origin.isoformat()}",
-            value=f"{actuals[origin]:.0f} trips",
+            label=f"Day 0: {origin.strftime('%A')} {origin.isoformat()}",
+            value=f"{actuals[origin]:.0f} trips (known)",
         )
     st.caption("Try: **Oct 5**, **Jun 22** (good) · **Sep 7** (strike) · **Jan 12** (winter)")
 
@@ -271,16 +281,24 @@ if not df.empty:
             name="80% interval", hoverinfo="skip",
         ))
 
-        # Forecast
+        # Forecast — label each point as Day 1..7
+        day_labels = [f"Day {h}" for h in df["horizon"]]
         fig.add_trace(go.Scatter(
             x=df["target"], y=df["predicted"],
-            mode="lines+markers", name="Forecast",
+            mode="lines+markers+text", name="Forecast",
             line=dict(color="#1f77b4", width=3), marker=dict(size=10),
-            customdata=list(zip(df["lower"].round(0), df["upper"].round(0), df["horizon"])),
+            text=day_labels,
+            textposition="top center",
+            textfont=dict(size=10, color="#1f77b4"),
+            customdata=list(zip(
+                df["lower"].round(0), df["upper"].round(0),
+                df["horizon"],
+                [f"Day {h}" for h in df["horizon"]],
+            )),
             hovertemplate=(
-                "<b>%{x|%a %b %d}</b> (%{customdata[2]}d ahead)<br>"
-                "Forecast: %{y:.0f}<br>"
-                "Interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
+                "<b>%{customdata[3]}</b> — %{x|%a %b %d}<br>"
+                "Forecast: %{y:.0f} trips<br>"
+                "80%% interval: [%{customdata[0]:.0f} .. %{customdata[1]:.0f}]<extra></extra>"
             ),
         ))
 
@@ -294,7 +312,11 @@ if not df.empty:
                 mode="markers", name="Actual",
                 marker=dict(size=13, color=colors, symbol="diamond",
                             line=dict(color="white", width=1.5)),
-                hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f}<extra></extra>",
+                customdata=[f"Day {h}" for h in kn["horizon"]],
+                hovertemplate=(
+                    "<b>%{customdata}</b> — %{x|%a %b %d}<br>"
+                    "Actual: %{y:.0f} trips<extra></extra>"
+                ),
             ))
 
         # Origin marker
@@ -309,8 +331,15 @@ if not df.empty:
         fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
         fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
         st.plotly_chart(fig, width="stretch")
+        st.caption(
+            f"**All 7 predictions are made at the same time from Day 0 "
+            f"({origin.strftime('%a %b %d')}).** "
+            f"Day 1 (tomorrow) is the most accurate because the model has the freshest data. "
+            f"Day 7 is the least accurate. Use ← Day / Day → to shift by one day and see how "
+            f"the forecast window moves."
+        )
 
-# Forecast table + summary underneath
+# Summary KPIs
 if not df.empty:
     if df["actual"].notna().any():
         kn = df.dropna(subset=["actual"])
@@ -318,8 +347,8 @@ if not df.empty:
         mae = (kn["predicted"] - kn["actual"]).abs().mean()
         wape = (kn["predicted"] - kn["actual"]).abs().sum() / max(kn["actual"].abs().sum(), 1e-8)
         c1, c2, c3 = st.columns(3)
-        c1.metric("This week's coverage", f"{int(in_iv.sum())}/{len(kn)} days inside interval")
-        c2.metric("This week's MAE", f"{mae:.0f} trips/day")
+        c1.metric("Days inside interval", f"{int(in_iv.sum())} of {len(kn)}")
+        c2.metric("Avg error (MAE)", f"{mae:.0f} trips/day")
         c3.metric("This week's WAPE", f"{wape:.1%}")
 
     # ==================================================================
