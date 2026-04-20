@@ -840,7 +840,7 @@ with tab_under:
     with col_imp:
         st.markdown("##### What the model actually uses most")
         _, _, _, metrics = load_models()
-        booster = lgb.Booster(model_file="data/models/lgbm_horizon_q50.txt")
+        booster = lgb.Booster(model_file="data/models/lgbm_daily_q50.txt")
         imp_df = pd.DataFrame({
             "feature": booster.feature_name(),
             "importance": booster.feature_importance(importance_type="split"),
