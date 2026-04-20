@@ -262,13 +262,26 @@ if not df.empty:
     else:
         fig = go.Figure()
 
-        # Past context — shortened to 7 days, subtle styling
+        # Combined actuals line — past 7 days + future actuals (where known)
+        # as one continuous solid grey line, so the transition is seamless
         hist_dates = [origin - timedelta(days=k) for k in range(7, -1, -1)]
         hist_vals = [actuals.get(d) for d in hist_dates]
+        future_targets = list(df["target"])
+        future_actuals = [
+            actuals.get(t.date() if hasattr(t, "date") else t) for t in future_targets
+        ]
+        all_dates = hist_dates + future_targets
+        all_vals = hist_vals + future_actuals
+        # Keep only where we have a real value so the line is continuous over known points
+        known_x, known_y = [], []
+        for x, y in zip(all_dates, all_vals):
+            if y is not None and not (isinstance(y, float) and pd.isna(y)):
+                known_x.append(x)
+                known_y.append(y)
         fig.add_trace(go.Scatter(
-            x=hist_dates, y=hist_vals, mode="lines+markers",
-            name="Known data",
-            line=dict(color="#aaa", width=2), marker=dict(size=4, color="#aaa"),
+            x=known_x, y=known_y, mode="lines+markers",
+            name="Actual",
+            line=dict(color="#888", width=2), marker=dict(size=5, color="#888"),
             hovertemplate="<b>%{x|%a %b %d}</b><br>Actual: %{y:.0f}<extra></extra>",
         ))
 
@@ -281,32 +294,21 @@ if not df.empty:
             name="80% interval", hoverinfo="skip",
         ))
 
-        # Actuals in the forecast window — continuous grey line (like the history)
-        if df["actual"].notna().any():
-            kn = df[df["actual"].notna()]
-            fig.add_trace(go.Scatter(
-                x=kn["target"], y=kn["actual"],
-                mode="lines+markers", name="Actual",
-                line=dict(color="#888", width=2, dash="dot"),
-                marker=dict(size=5, color="#888"),
-                customdata=[f"Day {h}" for h in kn["horizon"]],
-                hovertemplate=(
-                    "<b>%{customdata}</b> — %{x|%a %b %d}<br>"
-                    "Actual: %{y:.0f} trips<extra></extra>"
-                ),
-            ))
-
-        # Forecast — coloured diamond markers with connecting line + Day labels
+        # Forecast — diamond markers: green when actual fell inside the interval,
+        # red when it fell outside, blue (neutral) when no actual is available yet.
         day_labels = [f"Day {h}" for h in df["horizon"]]
-        in_iv = pd.Series([True] * len(df), index=df.index)
-        if df["actual"].notna().any():
-            in_iv = (df["actual"] >= df["lower"]) & (df["actual"] <= df["upper"])
-            in_iv = in_iv.fillna(True)
-        marker_colors = ["#1f77b4" if b else "#d62728" for b in in_iv]
+        marker_colors = []
+        for _, r in df.iterrows():
+            if pd.isna(r["actual"]):
+                marker_colors.append("#1f77b4")  # neutral blue — no actual yet
+            elif r["lower"] <= r["actual"] <= r["upper"]:
+                marker_colors.append("#2ca02c")  # green — inside interval
+            else:
+                marker_colors.append("#d62728")  # red — missed
         fig.add_trace(go.Scatter(
             x=df["target"], y=df["predicted"],
             mode="lines+markers+text", name="Forecast",
-            line=dict(color="#1f77b4", width=2, dash="solid"),
+            line=dict(color="#1f77b4", width=2),
             marker=dict(size=14, color=marker_colors, symbol="diamond",
                         line=dict(color="white", width=1.5)),
             text=day_labels,
